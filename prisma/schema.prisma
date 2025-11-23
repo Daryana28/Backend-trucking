@@ -1,0 +1,84 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Truck {
+  id    String  @id @default(cuid())
+  plate String  @unique
+  alias String?
+
+  truckUsages TruckUsage[]
+  routes      Route[]
+}
+
+model TruckUsage {
+  id String @id @default(cuid())
+
+  driverId String
+  truckId  String
+
+  driver Driver @relation(fields: [driverId], references: [id])
+  truck  Truck  @relation(fields: [truckId], references: [id])
+
+  lat     Float?
+  lng     Float?
+  speed   Float?
+  heading Float?
+
+  startedAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Route {
+  id String @id @default(cuid())
+
+  driverId String
+  truckId  String
+
+  originLat      Float?
+  originLng      Float?
+  destinationLat Float?
+  destinationLng Float?
+
+  driver Driver @relation(fields: [driverId], references: [id])
+  truck  Truck  @relation(fields: [truckId], references: [id])
+
+  createdAt DateTime @default(now())
+}
+
+model Otp {
+  phone String @id
+  otp   String
+}
+
+model Driver {
+  id       String @id @default(cuid())
+  name     String
+  phone    String @unique
+  password String
+
+  truckUsages TruckUsage[]
+  routes      Route[]
+
+  statuses DriverStatus[]
+}
+
+model DriverStatus {
+  id          String   @id @default(cuid())
+  driverId    String
+  plate       String?
+  destination String?
+  etdTime     String?
+  etaTime     String?
+  direction   String?  // "forward" | "reverse"
+  tripGroup   String
+  isFinished  Boolean  @default(false)
+  updatedAt   DateTime @updatedAt
+
+  driver Driver @relation(fields: [driverId], references: [id])
+}
