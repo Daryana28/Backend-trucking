@@ -31,9 +31,13 @@ function openWhatsApp(phone?: string | null) {
 export default function BhisaSidebar() {
   const [open, setOpen] = useState(true);
 
-  // FIX → latest harus array, bukan object
+  // latest harus array
   const [latest, setLatest] = useState<VehicleData[]>([]);
   const [history, setHistory] = useState<VehicleData[]>([]);
+
+  // 🔍 SEARCH state
+  const [search, setSearch] = useState("");
+
   const [activeTab, setActiveTab] = useState<TabKey>("Perangkat");
 
   useEffect(() => {
@@ -51,10 +55,10 @@ export default function BhisaSidebar() {
 
       const { active, history: historyData } = payload;
 
-      // FIX: Perangkat = semua trip active dari backend
+      // aktif langsung dari backend
       setLatest(active);
 
-      // FIX: history tambahkan hanya yang baru
+      // history → hanya tambah yang baru
       setHistory((prev) => {
         const next = [...prev];
         historyData.forEach((item) => {
@@ -67,15 +71,22 @@ export default function BhisaSidebar() {
       });
     };
 
-    stream.onerror = (err) => {
-      console.error("SSE ERROR:", err);
-    };
-
     return () => stream.close();
   }, []);
 
-  // FIX → gunakan latest langsung
-  const listToRender = activeTab === "Perangkat" ? latest : history;
+  // ============================
+  // 🔍 FILTER berdasarkan SEARCH
+  // ============================
+  const filteredLatest = latest.filter((v) =>
+    v.destination?.toLowerCase().includes(search.toLowerCase())
+  );
+
+  const filteredHistory = history.filter((v) =>
+    v.destination?.toLowerCase().includes(search.toLowerCase())
+  );
+
+  const listToRender =
+    activeTab === "Perangkat" ? filteredLatest : filteredHistory;
 
   return (
     <div className="absolute left-0 top-1/2 -translate-y-1/2 z-50 overflow-visible">
@@ -89,6 +100,7 @@ export default function BhisaSidebar() {
       >
         {open && (
           <div className="flex flex-col h-full">
+            {/* Tabs */}
             <div className="flex border-b border-gray-200">
               {tabs.map((t) => (
                 <button
@@ -106,6 +118,7 @@ export default function BhisaSidebar() {
               ))}
             </div>
 
+            {/* SEARCH INPUT */}
             <div className="p-3">
               <div className="flex items-center gap-2 bg-gray-100 rounded-xl px-3 py-2">
                 <svg
@@ -122,10 +135,13 @@ export default function BhisaSidebar() {
                 <input
                   placeholder="Cari kendaraan..."
                   className="bg-transparent outline-none text-gray-600 w-full"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
                 />
               </div>
             </div>
 
+            {/* LIST */}
             <div className="flex-1 overflow-auto px-3 pb-3 space-y-3 text-gray-600">
               {listToRender.map((v, idx) => (
                 <VehicleItem
@@ -145,6 +161,7 @@ export default function BhisaSidebar() {
         )}
       </div>
 
+      {/* Toggle button */}
       <button
         onClick={() => setOpen(!open)}
         className="absolute right-[-22px] top-1/2 -translate-y-1/2 h-10 w-10 rounded-full bg-white shadow-lg border border-gray-200 flex items-center justify-center transition-all"
@@ -164,17 +181,16 @@ export default function BhisaSidebar() {
   );
 }
 
-function VehicleItem(props: any) {
-  const {
-    plate,
-    driverName,
-    driverPhone,
-    destination,
-    etd,
-    eta,
-    direction,
-    isComplete,
-  } = props;
+function VehicleItem({
+  plate,
+  driverName,
+  driverPhone,
+  destination,
+  etd,
+  eta,
+  direction,
+  isComplete,
+}: any) {
   const isForward = direction === "forward";
   const isReverse = direction === "reverse";
 
@@ -200,6 +216,7 @@ function VehicleItem(props: any) {
         <div className="text-[11px] text-gray-500">
           {destination || "Destinasi belum dipilih"}
         </div>
+
         <div className="text-[11px] text-gray-500">
           ETD: {etd || "-"} | ETA: {eta || "-"}
         </div>
