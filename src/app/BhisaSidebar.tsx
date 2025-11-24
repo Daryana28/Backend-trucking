@@ -9,7 +9,7 @@ type VehicleData = {
   destination?: string | null;
   etdTime?: string | null;
   etaTime?: string | null;
-  direction?: string | null; // "forward" | "reverse"
+  direction?: string | null;
   updatedAt?: string;
   driver?: {
     name?: string | null;
@@ -20,29 +20,20 @@ type VehicleData = {
 const tabs = ["Perangkat", "Riwayat"] as const;
 type TabKey = (typeof tabs)[number];
 
-// helper WA
 function openWhatsApp(phone?: string | null) {
   if (!phone) return;
-
   let clean = phone.replace(/[^0-9+]/g, "");
-
   if (clean.startsWith("0")) clean = "62" + clean.slice(1);
   if (clean.startsWith("+")) clean = clean.slice(1);
-
-  if (typeof window !== "undefined") {
-    window.open(`https://wa.me/${clean}`, "_blank");
-  }
+  window.open(`https://wa.me/${clean}`, "_blank");
 }
 
 export default function BhisaSidebar() {
   const [open, setOpen] = useState(true);
 
-  // status terakhir per driver (tab Perangkat)
-  const [latest, setLatest] = useState<Record<string, VehicleData>>({});
-
-  // riwayat trip COMPLETE
+  // FIX → latest harus array, bukan object
+  const [latest, setLatest] = useState<VehicleData[]>([]);
   const [history, setHistory] = useState<VehicleData[]>([]);
-
   const [activeTab, setActiveTab] = useState<TabKey>("Perangkat");
 
   useEffect(() => {
@@ -52,7 +43,6 @@ export default function BhisaSidebar() {
       if (!e.data || e.data === "ping") return;
 
       let payload: { active: VehicleData[]; history: VehicleData[] };
-
       try {
         payload = JSON.parse(e.data);
       } catch {
@@ -61,40 +51,18 @@ export default function BhisaSidebar() {
 
       const { active, history: historyData } = payload;
 
-      // ====== UPDATE LATEST (Perangkat) ======
-      setLatest((prev) => {
-        const copy = { ...prev };
+      // FIX: Perangkat = semua trip active dari backend
+      setLatest(active);
 
-        // Update aktif
-        active.forEach((item) => {
-          if (item?.driverId) {
-            copy[item.driverId] = item;
-          }
-        });
-
-        // Pindahkan yang complete
-        historyData.forEach((item) => {
-          if (item?.driverId && item.etdTime && item.etaTime) {
-            delete copy[item.driverId]; // HILANG dari perangkat
-          }
-        });
-
-        return copy;
-      });
-      // ====== UPDATE HISTORY (Riwayat) ======
+      // FIX: history tambahkan hanya yang baru
       setHistory((prev) => {
         const next = [...prev];
-
         historyData.forEach((item) => {
-          const key = `${item.driverId}-${item.updatedAt ?? ""}`;
-          const exists = next.some(
-            (h) => `${h.driverId}-${h.updatedAt ?? ""}` === key
-          );
-          if (!exists) {
-            next.unshift(item); // terbaru di atas
+          const key = `${item.driverId}-${item.updatedAt}`;
+          if (!next.some((h) => `${h.driverId}-${h.updatedAt}` === key)) {
+            next.unshift(item);
           }
         });
-
         return next.slice(0, 200);
       });
     };
@@ -106,18 +74,8 @@ export default function BhisaSidebar() {
     return () => stream.close();
   }, []);
 
-  // list untuk tab Perangkat = trip yang masih aktif (etaTime null)
-  const deviceList = Object.values(latest);
-
-  const listToRender = activeTab === "Perangkat" ? deviceList : history;
-
-  // kalau ada history baru, auto pindah ke tab Riwayat (opsional)
-  useEffect(() => {
-    if (history.length > 0 && activeTab === "Perangkat") {
-      setActiveTab("Riwayat");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [history.length]);
+  // FIX → gunakan latest langsung
+  const listToRender = activeTab === "Perangkat" ? latest : history;
 
   return (
     <div className="absolute left-0 top-1/2 -translate-y-1/2 z-50 overflow-visible">
@@ -131,7 +89,6 @@ export default function BhisaSidebar() {
       >
         {open && (
           <div className="flex flex-col h-full">
-            {/* TABS */}
             <div className="flex border-b border-gray-200">
               {tabs.map((t) => (
                 <button
@@ -149,7 +106,6 @@ export default function BhisaSidebar() {
               ))}
             </div>
 
-            {/* SEARCH (dummy) */}
             <div className="p-3">
               <div className="flex items-center gap-2 bg-gray-100 rounded-xl px-3 py-2">
                 <svg
@@ -170,18 +126,17 @@ export default function BhisaSidebar() {
               </div>
             </div>
 
-            {/* LIST */}
             <div className="flex-1 overflow-auto px-3 pb-3 space-y-3 text-gray-600">
               {listToRender.map((v, idx) => (
                 <VehicleItem
                   key={`${v.driverId}-${v.updatedAt ?? idx}`}
-                  plate={v.plate ?? undefined}
-                  driverName={v.driver?.name ?? undefined}
-                  driverPhone={v.driver?.phone ?? undefined}
-                  destination={v.destination ?? undefined}
-                  etd={v.etdTime ?? undefined}
-                  eta={v.etaTime ?? undefined}
-                  direction={v.direction ?? undefined}
+                  plate={v.plate}
+                  driverName={v.driver?.name}
+                  driverPhone={v.driver?.phone}
+                  destination={v.destination}
+                  etd={v.etdTime}
+                  eta={v.etaTime}
+                  direction={v.direction}
                   isComplete={Boolean(v.etaTime)}
                 />
               ))}
@@ -190,14 +145,9 @@ export default function BhisaSidebar() {
         )}
       </div>
 
-      {/* BUTTON TOGGLE */}
       <button
         onClick={() => setOpen(!open)}
-        className="
-          absolute right-[-22px] top-1/2 -translate-y-1/2
-          h-10 w-10 rounded-full bg-white shadow-lg border border-gray-200
-          flex items-center justify-center transition-all
-        "
+        className="absolute right-[-22px] top-1/2 -translate-y-1/2 h-10 w-10 rounded-full bg-white shadow-lg border border-gray-200 flex items-center justify-center transition-all"
       >
         <svg
           viewBox="0 0 24 24"
@@ -214,25 +164,17 @@ export default function BhisaSidebar() {
   );
 }
 
-function VehicleItem({
-  plate,
-  driverName,
-  driverPhone,
-  destination,
-  etd,
-  eta,
-  direction,
-  isComplete,
-}: {
-  plate?: string;
-  driverName?: string;
-  driverPhone?: string;
-  destination?: string;
-  etd?: string;
-  eta?: string;
-  direction?: string;
-  isComplete: boolean;
-}) {
+function VehicleItem(props: any) {
+  const {
+    plate,
+    driverName,
+    driverPhone,
+    destination,
+    etd,
+    eta,
+    direction,
+    isComplete,
+  } = props;
   const isForward = direction === "forward";
   const isReverse = direction === "reverse";
 
@@ -242,14 +184,12 @@ function VehicleItem({
         <div className="text-sm font-semibold text-gray-900">
           {plate || "Unknown Plate"}
         </div>
-
         <div className="text-[11px] text-gray-700">
           {driverName || "Nama driver belum ada"}
         </div>
 
         {driverPhone && (
           <button
-            type="button"
             onClick={() => openWhatsApp(driverPhone)}
             className="text-[11px] text-green-600 underline"
           >
@@ -260,7 +200,6 @@ function VehicleItem({
         <div className="text-[11px] text-gray-500">
           {destination || "Destinasi belum dipilih"}
         </div>
-
         <div className="text-[11px] text-gray-500">
           ETD: {etd || "-"} | ETA: {eta || "-"}
         </div>
@@ -275,7 +214,6 @@ function VehicleItem({
       </div>
 
       <div className="flex flex-col items-end gap-1">
-        {/* Ikon mobil arah */}
         <div className="text-xl">
           <span
             className={
@@ -289,8 +227,6 @@ function VehicleItem({
             {isReverse ? "🚚←" : "🚚→"}
           </span>
         </div>
-
-        {/* Lampu status */}
         <div
           className={`h-3 w-3 rounded-full ${
             isComplete ? "bg-green-500" : "bg-red-500"

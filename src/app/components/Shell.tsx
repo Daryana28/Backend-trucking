@@ -9,9 +9,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
       <BhisaSidebar />
 
       {/* Map / Content */}
-      <div className="absolute inset-0">
-        {children}
-      </div>
+      <div className="absolute inset-0">{children}</div>
     </div>
   );
 }

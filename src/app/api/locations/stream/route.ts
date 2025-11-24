@@ -13,45 +13,15 @@ export async function GET(req: Request) {
         if (closed) return;
 
         try {
-          // ============================
-          // ACTIVE = trip belum complete
-          // ETD null ATAU ETA null
-          // ============================
-          const activeGroups = await prisma.driverStatus.groupBy({
+          // Ambil semua tripGroup + updatedAt terakhir
+          const groups = await prisma.driverStatus.groupBy({
             by: ["tripGroup"],
             _max: { updatedAt: true },
-            where: {
-              OR: [{ etdTime: null }, { etaTime: null }],
-            },
           });
 
-          const active = await Promise.all(
-            activeGroups.map(async (g) =>
-              prisma.driverStatus.findFirst({
-                where: {
-                  tripGroup: g.tripGroup,
-                  OR: [{ etdTime: null }, { etaTime: null }],
-                },
-                include: { driver: true },
-                orderBy: { updatedAt: "desc" },
-              })
-            )
-          );
-
-          // ============================
-          // HISTORY = trip sudah selesai
-          // ETD dan ETA TIDAK null
-          // ============================
-          const historyGroups = await prisma.driverStatus.groupBy({
-            by: ["tripGroup"],
-            _max: { updatedAt: true },
-            where: {
-              AND: [{ etdTime: { not: null } }, { etaTime: { not: null } }],
-            },
-          });
-
-          const history = await Promise.all(
-            historyGroups.map(async (g) =>
+          // Ambil record terakhir untuk tiap tripGroup
+          const lastRecords = await Promise.all(
+            groups.map((g) =>
               prisma.driverStatus.findFirst({
                 where: {
                   tripGroup: g.tripGroup,
@@ -62,12 +32,26 @@ export async function GET(req: Request) {
             )
           );
 
-          // KIRIM DATA KE FRONTEND
+          const active: any[] = [];
+          const history: any[] = [];
+
+          // Bagi: yang belum lengkap (ETD / ETA null) → active
+          //       yang sudah lengkap (ETD & ETA terisi) → history
+          for (const rec of lastRecords) {
+            if (!rec) continue;
+
+            if (!rec.etdTime || !rec.etaTime) {
+              active.push(rec);
+            } else {
+              history.push(rec);
+            }
+          }
+
           controller.enqueue(
             encoder.encode(
               `data: ${JSON.stringify({
-                active: active.filter(Boolean),
-                history: history.filter(Boolean),
+                active,
+                history,
               })}\n\n`
             )
           );
