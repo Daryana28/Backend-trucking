@@ -36,7 +36,7 @@ export default function BhisaSidebar() {
   const [activeTab, setActiveTab] = useState<TabKey>("Perangkat");
 
   useEffect(() => {
-    const stream = new EventSource("/api/locations/stream");
+    const stream = new EventSource("/api/status/stream");
 
     stream.onmessage = (e) => {
       if (!e.data || e.data === "ping") return;

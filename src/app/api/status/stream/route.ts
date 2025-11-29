@@ -1,3 +1,4 @@
+// src/app/api/locations/stream/route.ts
 import prisma from "@/lib/prisma";
 
 export const runtime = "nodejs";

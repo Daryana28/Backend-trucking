@@ -19,7 +19,7 @@ export default function RealtimeMap() {
 
   // STREAM
   useEffect(() => {
-    const stream = new EventSource("/api/locations/stream");
+    const stream = new EventSource("/api/status/stream");
 
     stream.onmessage = (e) => {
       if (!e.data || e.data === "ping") return;
