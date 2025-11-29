@@ -2,18 +2,29 @@
 
 import { useEffect, useState } from "react";
 
-type VehicleData = {
+type TripItem = {
+  tripGroup: string;
   driverId: string;
-  plate?: string | null;
-  destination?: string | null;
-  etdTime?: string | null;
-  etaTime?: string | null;
-  direction?: string | null;
-  updatedAt?: string;
   driver?: {
     name?: string | null;
     phone?: string | null;
-  };
+  } | null;
+  plate?: string | null;
+  origin?: string | null;
+  destinationForward?: string | null;
+  destinationReverse?: string | null;
+  forward?: {
+    etdTime?: string | null;
+    etaTime?: string | null;
+    direction?: string | null;
+  } | null;
+  reverse?: {
+    etdTime?: string | null;
+    etaTime?: string | null;
+    direction?: string | null;
+  } | null;
+  isComplete: boolean;
+  lastUpdated: string;
 };
 
 const tabs = ["Perangkat", "Riwayat"] as const;
@@ -29,59 +40,55 @@ function openWhatsApp(phone?: string | null) {
 
 export default function BhisaSidebar() {
   const [open, setOpen] = useState(true);
-
-  const [latest, setLatest] = useState<VehicleData[]>([]);
-  const [history, setHistory] = useState<VehicleData[]>([]);
+  const [active, setActive] = useState<TripItem[]>([]);
+  const [history, setHistory] = useState<TripItem[]>([]);
   const [search, setSearch] = useState("");
   const [activeTab, setActiveTab] = useState<TabKey>("Perangkat");
 
   useEffect(() => {
-    const stream = new EventSource("/api/status/stream");
+    const ev = new EventSource("/api/status/stream");
 
-    stream.onmessage = (e) => {
+    ev.onmessage = (e) => {
       if (!e.data || e.data === "ping") return;
 
-      let payload: { active: VehicleData[]; history: VehicleData[] };
       try {
-        payload = JSON.parse(e.data);
+        const payload = JSON.parse(e.data) as {
+          active: TripItem[];
+          history: TripItem[];
+        };
+
+        setActive(payload.active || []);
+        setHistory(payload.history || []);
       } catch {
-        return;
+        // ignore parse error
       }
-
-      const { active, history: historyData } = payload;
-      setLatest(active);
-
-      setHistory((prev) => {
-        const next = [...prev];
-        historyData.forEach((item) => {
-          const key = `${item.driverId}-${item.updatedAt}`;
-          if (!next.some((h) => `${h.driverId}-${h.updatedAt}` === key)) {
-            next.unshift(item);
-          }
-        });
-        return next.slice(0, 200);
-      });
     };
 
-    return () => stream.close();
+    ev.onerror = () => {
+      // optional: handle error reconnect
+    };
+
+    return () => ev.close();
   }, []);
 
-  const filteredLatest = latest.filter((v) =>
-    v.destination?.toLowerCase().includes(search.toLowerCase())
-  );
+  const listSource = activeTab === "Perangkat" ? active : history;
 
-  const filteredHistory = history.filter((v) =>
-    v.destination?.toLowerCase().includes(search.toLowerCase())
-  );
-
-  const listToRender =
-    activeTab === "Perangkat" ? filteredLatest : filteredHistory;
+  const filtered = listSource.filter((item) => {
+    const q = search.toLowerCase();
+    return (
+      item.plate?.toLowerCase().includes(q) ||
+      item.driver?.name?.toLowerCase().includes(q) ||
+      item.origin?.toLowerCase().includes(q) ||
+      item.destinationForward?.toLowerCase().includes(q) ||
+      item.destinationReverse?.toLowerCase().includes(q)
+    );
+  });
 
   return (
     <div className="fixed z-50 top-4 left-4 w-fit">
       {/* Toggle Button */}
       <button
-        onClick={() => setOpen(!open)}
+        onClick={() => setOpen((v) => !v)}
         className="h-11 w-11 rounded-full bg-white shadow-xl border border-gray-300
           flex items-center justify-center transition-all duration-300"
       >
@@ -97,7 +104,7 @@ export default function BhisaSidebar() {
         </svg>
       </button>
 
-      {/* Sidebar Panel */}
+      {/* Panel */}
       <div
         className={`
           mt-3 bg-white rounded-2xl shadow-xl border border-gray-200
@@ -105,14 +112,12 @@ export default function BhisaSidebar() {
           transition-all duration-300 ease-out
           ${open ? "opacity-100" : "opacity-0 pointer-events-none"}
           ${open ? "max-h-[80vh]" : "max-h-0"}
-          w-[90vw] lg:w-[360px]
+          w-[90vw] lg:w-[380px]
         `}
       >
         {open && (
           <div className="flex flex-col h-full">
-            {/* =============================== */}
-            {/*           STICKY TABS           */}
-            {/* =============================== */}
+            {/* TABS */}
             <div className="flex border-b border-gray-200 flex-shrink-0 sticky top-0 z-20 bg-white">
               {tabs.map((t) => (
                 <button
@@ -130,9 +135,7 @@ export default function BhisaSidebar() {
               ))}
             </div>
 
-            {/* =============================== */}
-            {/*       STICKY SEARCH BAR         */}
-            {/* =============================== */}
+            {/* SEARCH */}
             <div className="p-3 flex-shrink-0 sticky top-[48px] z-20 bg-white">
               <div className="flex items-center gap-2 bg-gray-100 rounded-xl px-3 py-2">
                 <svg
@@ -148,29 +151,25 @@ export default function BhisaSidebar() {
                 </svg>
 
                 <input
-                  placeholder="Cari kendaraan…"
-                  className="bg-transparent outline-none text-gray-600 w-full"
+                  placeholder="Cari nopol / driver / tujuan…"
+                  className="bg-transparent outline-none text-gray-600 w-full text-sm"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                 />
               </div>
             </div>
 
-            {/* LIST (scrollable) */}
+            {/* LIST */}
             <div className="flex-1 overflow-auto px-3 pb-3 space-y-3">
-              {listToRender.map((v, idx) => (
-                <VehicleItem
-                  key={`${v.driverId}-${v.updatedAt ?? idx}`}
-                  plate={v.plate}
-                  driverName={v.driver?.name}
-                  driverPhone={v.driver?.phone}
-                  destination={v.destination}
-                  etd={v.etdTime}
-                  eta={v.etaTime}
-                  direction={v.direction}
-                  isComplete={Boolean(v.etaTime)}
-                />
+              {filtered.map((item) => (
+                <TripCard key={item.tripGroup} item={item} />
               ))}
+
+              {filtered.length === 0 && (
+                <div className="text-xs text-gray-400 text-center py-4">
+                  Tidak ada data
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -179,75 +178,101 @@ export default function BhisaSidebar() {
   );
 }
 
-/* VEHICLE ITEM */
-function VehicleItem({
-  plate,
-  driverName,
-  driverPhone,
-  destination,
-  etd,
-  eta,
-  direction,
-  isComplete,
-}: any) {
-  const isForward = direction === "forward";
-  const isReverse = direction === "reverse";
+/* ============ CARD GROUPING ============ */
+
+function TripCard({ item }: { item: TripItem }) {
+  const { driver, plate, origin, destinationForward, destinationReverse } =
+    item;
+  const f = item.forward;
+  const r = item.reverse;
+
+  const statusText = item.isComplete ? "Delivery Complete" : "Delivery Process";
+  const statusColor = item.isComplete
+    ? "bg-green-100 text-green-700"
+    : "bg-amber-100 text-amber-700";
+  const dotColor = item.isComplete ? "bg-green-500" : "bg-amber-500";
 
   return (
-    <div className="flex items-center justify-between bg-gray-50 rounded-xl px-3 py-3 border border-gray-200 shadow-sm">
-      <div>
-        <div className="text-sm font-semibold text-gray-900">
-          {plate || "Unknown Plate"}
+    <div className="bg-gray-50 rounded-2xl border border-gray-200 shadow-sm p-3 space-y-3">
+      {/* HEADER */}
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <div className="text-sm font-semibold text-gray-900">
+            {plate || "Unknown Plate"}
+          </div>
+          <div className="text-[11px] text-gray-600">
+            {driver?.name || "Nama driver tidak tersedia"}
+          </div>
+
+          {driver?.phone && (
+            <button
+              onClick={() => openWhatsApp(driver.phone)}
+              className="text-[11px] text-green-600 underline"
+            >
+              {driver.phone}
+            </button>
+          )}
         </div>
 
-        <div className="text-[11px] text-gray-700">
-          {driverName || "Nama driver tidak tersedia"}
-        </div>
-
-        {driverPhone && (
-          <button
-            onClick={() => openWhatsApp(driverPhone)}
-            className="text-[11px] text-green-600 underline"
+        <div className="flex flex-col items-end gap-1">
+          <span
+            className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${statusColor}`}
           >
-            {driverPhone}
-          </button>
-        )}
-
-        <div className="text-[11px] text-gray-500">
-          {destination || "Destinasi belum dipilih"}
-        </div>
-
-        <div className="text-[11px] text-gray-500">
-          ETD: {etd || "-"} | ETA: {eta || "-"}
-        </div>
-
-        <div
-          className={`text-[11px] mt-1 ${
-            isComplete ? "text-green-600" : "text-red-500"
-          }`}
-        >
-          {isComplete ? "Delivery Complete" : "Delivery Process"}
+            {statusText}
+          </span>
+          <div className={`h-2.5 w-2.5 rounded-full ${dotColor}`} />
         </div>
       </div>
 
-      <div className="flex flex-col items-end gap-1">
-        <span
-          className={`text-xl ${
-            isForward
-              ? "text-orange-500"
-              : isReverse
-              ? "text-slate-500"
-              : "text-gray-400"
-          }`}
-        >
-          {isReverse ? "🚚←" : "🚚→"}
-        </span>
+      {/* BODY */}
+      <div className="grid grid-cols-1 gap-2 border-t border-gray-200 pt-2">
+        {/* FORWARD */}
+        <div className="rounded-xl bg-white/80 border border-orange-100 px-2.5 py-2">
+          <div className="flex items-center justify-between text-[11px] mb-1">
+            <span className="font-semibold text-orange-600 flex items-center gap-1">
+              <span>Forward</span>
+              <span>🚚→</span>
+            </span>
+            <span className="text-gray-400">
+              ETD: {f?.etdTime || "-"} · ETA: {f?.etaTime || "-"}
+            </span>
+          </div>
 
-        <div
-          className={`h-3 w-3 rounded-full ${
-            isComplete ? "bg-green-500" : "bg-red-500"
-          }`}
-        />
+          <div className="text-[11px] text-gray-600">
+            <div>
+              <span className="font-medium">From: </span>
+              <span>{origin || "-"}</span>
+            </div>
+            <div>
+              <span className="font-medium">To: </span>
+              <span>{destinationForward || "-"}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* REVERSE */}
+        <div className="rounded-xl bg-white/80 border border-slate-100 px-2.5 py-2">
+          <div className="flex items-center justify-between text-[11px] mb-1">
+            <span className="font-semibold text-slate-600 flex items-center gap-1">
+              <span>Reverse</span>
+              <span>🚚←</span>
+            </span>
+            <span className="text-gray-400">
+              ETD: {r?.etdTime || "-"} · ETA: {r?.etaTime || "-"}
+            </span>
+          </div>
+
+          <div className="text-[11px] text-gray-600">
+            <div>
+              <span className="font-medium">From: </span>
+              <span>{destinationForward || "-"}</span>
+            </div>
+            <div>
+              <span className="font-medium">To: </span>
+              <span>{destinationReverse || "-"}</span>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );

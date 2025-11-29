@@ -1,4 +1,4 @@
-// src/app/api/locations/stream/route.ts
+// src/app/api/status/stream/route.ts
 import prisma from "@/lib/prisma";
 
 export const runtime = "nodejs";
@@ -14,38 +14,73 @@ export async function GET(req: Request) {
         if (closed) return;
 
         try {
-          // Ambil semua tripGroup + updatedAt terakhir
+          // Kelompokkan berdasarkan tripGroup + driver
           const groups = await prisma.driverStatus.groupBy({
-            by: ["tripGroup"],
+            by: ["tripGroup", "driverId"],
             _max: { updatedAt: true },
           });
-
-          // Ambil record terakhir untuk tiap tripGroup
-          const lastRecords = await Promise.all(
-            groups.map((g) =>
-              prisma.driverStatus.findFirst({
-                where: {
-                  tripGroup: g.tripGroup,
-                  updatedAt: g._max.updatedAt ?? undefined,
-                },
-                include: { driver: true },
-              })
-            )
-          );
 
           const active: any[] = [];
           const history: any[] = [];
 
-          // Bagi: yang belum lengkap (ETD / ETA null) → active
-          //       yang sudah lengkap (ETD & ETA terisi) → history
-          for (const rec of lastRecords) {
-            if (!rec) continue;
+          for (const g of groups) {
+            const statuses = await prisma.driverStatus.findMany({
+              where: { tripGroup: g.tripGroup },
+              include: { driver: true },
+              orderBy: { updatedAt: "asc" },
+            });
 
-            if (!rec.etdTime || !rec.etaTime) {
-              active.push(rec);
-            } else {
-              history.push(rec);
-            }
+            if (!statuses.length) continue;
+
+            const forward =
+              [...statuses]
+                .filter((s) => s.direction === "forward")
+                .slice(-1)[0] || null;
+            const reverse =
+              [...statuses]
+                .filter((s) => s.direction === "reverse")
+                .slice(-1)[0] || null;
+
+            const anyStatus = statuses[statuses.length - 1];
+
+            const plate = forward?.plate ?? reverse?.plate ?? null;
+            const origin = forward?.origin ?? reverse?.origin ?? null;
+            const destinationForward = forward?.destination ?? null;
+            const destinationReverse = reverse?.destination ?? null;
+
+            const isComplete = Boolean(forward?.etaTime && reverse?.etaTime);
+
+            const tripItem = {
+              tripGroup: g.tripGroup,
+              driverId: g.driverId,
+              driver: {
+                name: anyStatus.driver?.name ?? null,
+                phone: anyStatus.driver?.phone ?? null,
+              },
+              plate,
+              origin,
+              destinationForward,
+              destinationReverse,
+              forward: forward
+                ? {
+                    etdTime: forward.etdTime,
+                    etaTime: forward.etaTime,
+                    direction: forward.direction,
+                  }
+                : null,
+              reverse: reverse
+                ? {
+                    etdTime: reverse.etdTime,
+                    etaTime: reverse.etaTime,
+                    direction: reverse.direction,
+                  }
+                : null,
+              isComplete,
+              lastUpdated: anyStatus.updatedAt.toISOString(),
+            };
+
+            if (isComplete) history.push(tripItem);
+            else active.push(tripItem);
           }
 
           controller.enqueue(

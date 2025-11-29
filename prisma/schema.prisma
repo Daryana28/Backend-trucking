@@ -75,6 +75,7 @@ model DriverStatus {
   destination String?
   etdTime     String?
   etaTime     String?
+  origin      String?
   direction   String?  // "forward" | "reverse"
   tripGroup   String
   isFinished  Boolean  @default(false)

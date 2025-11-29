@@ -15,64 +15,65 @@ export async function POST(req: Request) {
       );
     }
 
-    const { plate, destination, etdTime, etaTime, direction } =
-      await req.json();
+    const body = (await req.json()) ?? {};
+    const { plate, origin, destination, etdTime, etaTime, direction } = body;
 
-    const dir = direction || "forward";
+    const dir: "forward" | "reverse" =
+      direction === "reverse" ? "reverse" : "forward";
 
-    // === Ambil status terakhir sesuai direction ===
-    const last = await prisma.driverStatus.findFirst({
-      where: {
-        driverId: driver.id,
-        direction: dir, // ⭐ FIX UTAMA
-      },
-      orderBy: { updatedAt: "desc" },
-    });
+    // Ambil status terakhir driver (semua direction) berdasarkan updatedAt
+    const last = await prisma.driverStatus
+      .findMany({
+        where: { driverId: driver.id },
+        orderBy: { updatedAt: "desc" },
+        take: 1,
+      })
+      .then((rows) => rows[0] || null);
 
-    // === Gunakan nilai lama bila tidak dikirim ===
-    let finalPlate = plate ?? last?.plate ?? null;
-    let finalDestination = destination ?? last?.destination ?? null;
-    let finalEtd = etdTime ?? last?.etdTime ?? null;
-    let finalEta = etaTime ?? last?.etaTime ?? null;
-
-    // === Tetapkan direction dengan BENAR ===
-    const finalDirection = dir;
-
-    // === Cek apakah perlu trip baru ===
+    // Tentukan perlu trip baru?
     let makeNewTrip = false;
-
-    // 1. Tidak ada trip sebelumnya
     if (!last) makeNewTrip = true;
-
-    // 2. Plate berubah → mulai trip baru
-    if (plate && plate !== last?.plate) {
-      finalEtd = null;
-      finalEta = null;
+    if (plate && plate !== last?.plate) makeNewTrip = true;
+    if (last?.isFinished && (etdTime || etaTime || plate || destination)) {
       makeNewTrip = true;
     }
 
-    // 3. Trip sebelumnya FINISH → update baru ⇒ trip baru
-    if (last?.isFinished && (etdTime || etaTime)) {
-      makeNewTrip = true;
+    let tripGroup = last?.tripGroup || "";
+    if (!last || makeNewTrip) {
+      tripGroup = `trip_${driver.id}_${Date.now()}`;
     }
 
-    // === TRIP GROUP HARUS BERDASARKAN direction ===
-    const tripGroup = makeNewTrip
-      ? `trip_${driver.id}_${finalDirection}_${Date.now()}` // ⭐ perbedaan jelas
-      : last!.tripGroup;
+    // Ambil status terakhir untuk tripGroup + direction yang sama
+    let lastSameDir = null as any;
+    if (!makeNewTrip) {
+      lastSameDir = await prisma.driverStatus
+        .findMany({
+          where: { driverId: driver.id, tripGroup, direction: dir },
+          orderBy: { updatedAt: "desc" },
+          take: 1,
+        })
+        .then((rows) => rows[0] || null);
+    }
 
-    // Status complete bila ETD & ETA ada
-    const isFinished = Boolean(finalEtd && finalEta);
+    const finalPlate = plate ?? lastSameDir?.plate ?? last?.plate ?? null;
+    const finalOrigin = origin ?? lastSameDir?.origin ?? last?.origin ?? null;
+    const finalDestination =
+      destination ?? lastSameDir?.destination ?? last?.destination ?? null;
+    const finalEtd = etdTime ?? lastSameDir?.etdTime ?? null;
+    const finalEta = etaTime ?? lastSameDir?.etaTime ?? null;
 
-    // === SIMPAN RECORD ===
+    // Trip dianggap selesai hanya ketika reverse sudah punya ETD & ETA
+    const isFinished = dir === "reverse" && Boolean(finalEtd && finalEta);
+
     const status = await prisma.driverStatus.create({
       data: {
         driverId: driver.id,
         plate: finalPlate,
+        origin: finalOrigin,
         destination: finalDestination,
         etdTime: finalEtd,
         etaTime: finalEta,
-        direction: finalDirection, // ⭐ WAJIB
+        direction: dir,
         tripGroup,
         isFinished,
       },
