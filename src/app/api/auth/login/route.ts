@@ -59,15 +59,10 @@ export async function POST(req: Request) {
       },
       { status: 200, headers: corsHeaders }
     );
-  } catch (e: any) {
+  } catch (e) {
     console.error("POST /api/auth/login ERROR:", e);
-
     return NextResponse.json(
-      {
-        success: false,
-        message: e?.message || "Server error",
-        error: String(e),
-      },
+      { success: false, message: "Server error" },
       { status: 500, headers: corsHeaders }
     );
   }
