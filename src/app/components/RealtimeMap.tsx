@@ -2,6 +2,8 @@
 
 import { GoogleMap, Marker, useLoadScript } from "@react-google-maps/api";
 import { useEffect, useState, useRef } from "react";
+import LogoutButton from "./LogoutButton";
+import Image from "next/image";
 
 export default function RealtimeMap() {
   const { isLoaded } = useLoadScript({
@@ -17,7 +19,7 @@ export default function RealtimeMap() {
     heading: 0,
   });
 
-  // STREAM
+  // STREAM POSISI DRIVER
   useEffect(() => {
     const stream = new EventSource("/api/status/stream");
 
@@ -45,21 +47,32 @@ export default function RealtimeMap() {
 
   if (!isLoaded) return <p>Loading map...</p>;
 
-  // ZOOM HANDLERS
   const zoomIn = () => {
     if (!mapRef.current) return;
-    const currentZoom = mapRef.current.getZoom();
-    mapRef.current.setZoom(currentZoom + 1);
+    mapRef.current.setZoom(mapRef.current.getZoom() + 1);
   };
 
   const zoomOut = () => {
     if (!mapRef.current) return;
-    const currentZoom = mapRef.current.getZoom();
-    mapRef.current.setZoom(currentZoom - 1);
+    mapRef.current.setZoom(mapRef.current.getZoom() - 1);
   };
 
   return (
     <div className="relative w-full h-full min-h-screen">
+      {/* 🔥 LOGOUT BUTTON DI POJOK KANAN ATAS */}
+      {/* === LOGOUT BUTTON (TOP RIGHT) === */}
+      <button
+        onClick={() => {
+          localStorage.removeItem("admin_token");
+          window.location.href = "/login";
+        }}
+        className="absolute top-6 right-6 z-50 
+             w-11 h-11 rounded-full bg-white shadow-xl border border-gray-300
+             flex items-center justify-center"
+      >
+        <Image src="/logout.png" width={22} height={22} alt="logout" />
+      </button>
+
       {/* GOOGLE MAP */}
       <GoogleMap
         zoom={14}
@@ -76,9 +89,8 @@ export default function RealtimeMap() {
         <Marker position={driverPos} />
       </GoogleMap>
 
-      {/* === ZOOM BUTTONS (RIGHT BOTTOM) === */}
+      {/* === ZOOM BUTTONS === */}
       <div className="absolute bottom-6 right-6 flex flex-col gap-3 z-50">
-        {/* Zoom In */}
         <button
           onClick={zoomIn}
           className="w-12 h-12 rounded-full bg-white shadow-lg border border-gray-300
@@ -87,10 +99,9 @@ export default function RealtimeMap() {
           +
         </button>
 
-        {/* Zoom Out */}
         <button
           onClick={zoomOut}
-          className="w-12 h-12 rounded-full bg-white shadow-lg border border-gray-0
+          className="w-12 h-12 rounded-full bg-white shadow-lg border border-gray-300
                      flex items-center justify-center text-2xl font-bold"
         >
           –

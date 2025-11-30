@@ -1,6 +1,4 @@
 import "./globals.css";
-import Shell from "./components/Shell"; // path sudah benar
-
 
 export default function RootLayout({
   children,
@@ -9,9 +7,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>
-        <Shell>{children}</Shell>
-      </body>
+      <body>{children}</body>
     </html>
   );
 }

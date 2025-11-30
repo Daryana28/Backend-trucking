@@ -1,10 +1,5 @@
-"use client";
-import RealtimeMap from "./components/RealtimeMap";
+import { redirect } from "next/navigation";
 
 export default function Page() {
-  return (
-    <div className="w-full h-full">
-      <RealtimeMap />
-    </div>
-  );
+  redirect("/login");
 }

@@ -83,3 +83,10 @@ model DriverStatus {
 
   driver Driver @relation(fields: [driverId], references: [id])
 }
+
+model Admin {
+  id       String @id @default(cuid())
+  username String @unique
+  password String
+  createdAt DateTime @default(now())
+}
