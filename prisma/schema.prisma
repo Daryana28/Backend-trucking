@@ -5,7 +5,7 @@ generator client {
 
 datasource db {
   provider  = "postgresql"
-  url       = env("DATABASE_URL")  // pooler
+  url       = env("DATABASE_URL")  
 }
 
 model Truck {
@@ -81,6 +81,12 @@ model DriverStatus {
   tripGroup   String
   isFinished  Boolean  @default(false)
   updatedAt   DateTime @updatedAt
+
+  // Location data
+  lat         Float?
+  lng         Float?
+  speed       Float?
+  heading     Float?
 
   driver Driver @relation(fields: [driverId], references: [id])
 }

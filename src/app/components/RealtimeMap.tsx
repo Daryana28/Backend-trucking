@@ -1,9 +1,32 @@
+// src/app/components/RealtimeMap.tsx
 "use client";
 
-import { GoogleMap, Marker, useLoadScript } from "@react-google-maps/api";
-import { useEffect, useState, useRef } from "react";
-import LogoutButton from "./LogoutButton";
+import {
+  GoogleMap,
+  Marker,
+  Polyline,
+  useLoadScript,
+} from "@react-google-maps/api";
+import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
+
+type DriverStatus = {
+  id: string;
+  driverId: string;
+  plate: string | null;
+  destination: string | null;
+  lat: number | null;
+  lng: number | null;
+  heading: number | null;
+  updatedAt: string;
+  driver: {
+    name: string;
+    phone?: string | null;
+  };
+};
+
+// path jejak per driver
+type PathsByDriver = Record<string, google.maps.LatLngLiteral[]>;
 
 export default function RealtimeMap() {
   const { isLoaded } = useLoadScript({
@@ -11,56 +34,86 @@ export default function RealtimeMap() {
     libraries: ["geometry"],
   });
 
-  const mapRef = useRef<any>(null);
+  const mapRef = useRef<google.maps.Map | null>(null);
+  const [drivers, setDrivers] = useState<DriverStatus[]>([]);
+  const [paths, setPaths] = useState<PathsByDriver>({});
 
-  const [driverPos, setDriverPos] = useState({
-    lat: -6.2,
-    lng: 106.8166,
-    heading: 0,
-  });
-
-  // STREAM POSISI DRIVER
+  // ambil posisi driver dari backend (polling)
   useEffect(() => {
-    const stream = new EventSource("/api/status/stream");
+    let cancelled = false;
 
-    stream.onmessage = (e) => {
-      if (!e.data || e.data === "ping") return;
-
-      let d: any = null;
+    const fetchPositions = async () => {
       try {
-        d = JSON.parse(e.data);
-      } catch {
-        return;
+        const res = await fetch("/api/driver-status/latest");
+        if (!res.ok) return;
+        const data: DriverStatus[] = await res.json();
+
+        if (!cancelled) {
+          setDrivers(data);
+
+          // update jejak path per driver
+          setPaths((prev) => {
+            const next: PathsByDriver = { ...prev };
+
+            data.forEach((d) => {
+              if (!d.lat || !d.lng) return;
+
+              const key = d.driverId;
+              const point = { lat: d.lat, lng: d.lng };
+
+              const existing = next[key] ?? [];
+              const last = existing[existing.length - 1];
+
+              // hindari duplikat titik yang sama persis
+              if (!last || last.lat !== point.lat || last.lng !== point.lng) {
+                next[key] = [...existing, point];
+              }
+            });
+
+            return next;
+          });
+        }
+      } catch (err) {
+        console.error("fetchPositions error:", err);
       }
-
-      if (!d?.lat || !d?.lng) return;
-
-      setDriverPos({
-        lat: Number(d.lat),
-        lng: Number(d.lng),
-        heading: Number(d.heading) || 0,
-      });
     };
 
-    return () => stream.close();
+    fetchPositions(); // pertama kali
+    const interval = setInterval(fetchPositions, 5000); // refresh tiap 5 detik
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, []);
 
   if (!isLoaded) return <p>Loading map...</p>;
 
+  // tentukan center map (pakai driver pertama yang punya lat/lng)
+  const defaultCenter =
+    drivers.length > 0 && drivers[0].lat && drivers[0].lng
+      ? { lat: drivers[0].lat, lng: drivers[0].lng }
+      : { lat: -6.2, lng: 106.8166 }; // fallback Jakarta
+
   const zoomIn = () => {
-    if (!mapRef.current) return;
-    mapRef.current.setZoom(mapRef.current.getZoom() + 1);
+    const map = mapRef.current;
+    if (!map) return;
+
+    const currentZoom = map.getZoom() ?? 14;
+    map.setZoom(currentZoom + 1);
   };
 
   const zoomOut = () => {
-    if (!mapRef.current) return;
-    mapRef.current.setZoom(mapRef.current.getZoom() - 1);
+    const map = mapRef.current;
+    if (!map) return;
+
+    const currentZoom = map.getZoom() ?? 14;
+    map.setZoom(currentZoom - 1);
   };
 
   return (
     <div className="relative w-full h-full min-h-screen">
-      {/* 🔥 LOGOUT BUTTON DI POJOK KANAN ATAS */}
-      {/* === LOGOUT BUTTON (TOP RIGHT) === */}
+      {/* LOGOUT BUTTON */}
       <button
         onClick={() => {
           localStorage.removeItem("admin_token");
@@ -76,9 +129,9 @@ export default function RealtimeMap() {
       {/* GOOGLE MAP */}
       <GoogleMap
         zoom={14}
-        center={driverPos}
+        center={defaultCenter}
         onLoad={(map) => {
-          mapRef.current = map as google.maps.Map;
+          mapRef.current = map;
         }}
         mapContainerClassName="w-full h-full"
         options={{
@@ -86,10 +139,52 @@ export default function RealtimeMap() {
           gestureHandling: "greedy",
         }}
       >
-        <Marker position={driverPos} />
+        {/* marker + jalur semua driver */}
+        {drivers.map((d) => {
+          if (!d.lat || !d.lng) return null;
+
+          const pos = { lat: d.lat, lng: d.lng };
+          const path = paths[d.driverId] ?? [pos];
+
+          // --- tambahan: text label (nopol + destinasi) ---
+          const plate = d.plate ?? "-";
+          const dest = d.destination ?? "-";
+
+          return (
+            <div key={d.id}>
+              {/* garis rute (jejak perjalanan) */}
+              <Polyline
+                path={path}
+                options={{
+                  strokeOpacity: 0.9,
+                  strokeWeight: 4,
+                  // warna default (biar tidak set manual sesuai instruksi tools)
+                }}
+              />
+
+              {/* marker truk + label */}
+              <Marker
+                position={pos}
+                label={{
+                  text: `${plate} • ${dest}`,
+                  color: "#ffffff",
+                  fontSize: "10px",
+                  fontWeight: "bold",
+                }}
+                icon={{
+                  url: "/truck-marker.png",
+                  scaledSize: new google.maps.Size(40, 40),
+                  anchor: new google.maps.Point(20, 20),
+                  // posisi label di atas icon
+                  labelOrigin: new google.maps.Point(20, -6),
+                }}
+              />
+            </div>
+          );
+        })}
       </GoogleMap>
 
-      {/* === ZOOM BUTTONS === */}
+      {/* ZOOM BUTTONS */}
       <div className="absolute bottom-6 right-6 flex flex-col gap-3 z-50">
         <button
           onClick={zoomIn}

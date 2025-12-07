@@ -16,7 +16,20 @@ export async function POST(req: Request) {
     }
 
     const body = (await req.json()) ?? {};
-    const { plate, origin, destination, etdTime, etaTime, direction } = body;
+    const {
+      plate,
+      origin,
+      destination,
+      etdTime,
+      etaTime,
+      direction,
+
+      // 🔹 lokasi yang dikirim dari mobile (opsional)
+      lat,
+      lng,
+      speed,
+      heading,
+    } = body;
 
     const dir: "forward" | "reverse" =
       direction === "reverse" ? "reverse" : "forward";
@@ -62,6 +75,13 @@ export async function POST(req: Request) {
     const finalEtd = etdTime ?? lastSameDir?.etdTime ?? null;
     const finalEta = etaTime ?? lastSameDir?.etaTime ?? null;
 
+    // 🔹 lokasi final: kalau body kirim pakai itu, kalau tidak pakai status terakhir
+    const finalLat = lat ?? lastSameDir?.lat ?? last?.lat ?? null;
+    const finalLng = lng ?? lastSameDir?.lng ?? last?.lng ?? null;
+    const finalSpeed = speed ?? lastSameDir?.speed ?? last?.speed ?? null;
+    const finalHeading =
+      heading ?? lastSameDir?.heading ?? last?.heading ?? null;
+
     // Trip dianggap selesai hanya ketika reverse sudah punya ETD & ETA
     const isFinished = dir === "reverse" && Boolean(finalEtd && finalEta);
 
@@ -76,6 +96,12 @@ export async function POST(req: Request) {
         direction: dir,
         tripGroup,
         isFinished,
+
+        // 🔹 simpan lokasi juga
+        lat: finalLat,
+        lng: finalLng,
+        speed: finalSpeed,
+        heading: finalHeading,
       },
     });
 
