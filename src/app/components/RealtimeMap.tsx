@@ -116,17 +116,35 @@ export default function RealtimeMap() {
 
   return (
     <div className="relative w-full h-full min-h-screen">
-      <button
-        onClick={() => {
-          localStorage.removeItem("admin_token");
-          window.location.href = "/login";
-        }}
-        className="absolute top-6 right-6 z-50 
-             w-11 h-11 rounded-full bg-white shadow-xl border border-gray-300
-             flex items-center justify-center"
-      >
-        <Image src="/logout.png" width={22} height={22} alt="logout" />
-      </button>
+      {/* ✅ WRAPPER tombol (minim perubahan): biar sejajar */}
+      <div className="absolute top-6 right-6 z-50 flex items-center gap-3">
+        {/* ✅ tombol history (baru) */}
+        <button
+          onClick={() => {
+            window.location.href = "/history"; // ganti route kalau beda
+          }}
+          className="w-11 h-11 rounded-full bg-white shadow-xl border border-gray-300
+                     flex items-center justify-center"
+          aria-label="history"
+          title="History"
+        >
+          <Image src="/history.png" width={22} height={22} alt="history" />
+        </button>
+
+        {/* tombol logout (kode kamu, nggak diubah logic-nya) */}
+        <button
+          onClick={() => {
+            localStorage.removeItem("admin_token");
+            window.location.href = "/login";
+          }}
+          className="w-11 h-11 rounded-full bg-white shadow-xl border border-gray-300
+                     flex items-center justify-center"
+          aria-label="logout"
+          title="Logout"
+        >
+          <Image src="/logout.png" width={22} height={22} alt="logout" />
+        </button>
+      </div>
 
       <GoogleMap
         zoom={14}

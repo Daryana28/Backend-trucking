@@ -18,17 +18,27 @@ export default function LoginPage() {
     setLoading(true);
     setError("");
 
-    setTimeout(() => {
-      if (
-        (username === "admin" && password === "admin") ||
-        (username === "logistic" && password === "123456")
-      ) {
+    try {
+      const res = await fetch("/api/admin/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // penting: kirim sesuai API kamu (username, password)
+        body: JSON.stringify({ username, password }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      // API kamu mengembalikan { ok: true } saat sukses
+      if (res.ok && data.ok) {
         router.push("/home");
       } else {
-        setError("User ID atau Password salah");
+        setError(data.error || "User ID atau Password salah");
       }
+    } catch (e) {
+      setError("Gagal konek ke server");
+    } finally {
       setLoading(false);
-    }, 700);
+    }
   }
 
   return (
