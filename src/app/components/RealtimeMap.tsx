@@ -1,4 +1,3 @@
-// src/app/components/RealtimeMap.tsx
 "use client";
 
 import {
@@ -7,7 +6,7 @@ import {
   Polyline,
   useLoadScript,
 } from "@react-google-maps/api";
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 
 type DriverStatus = {
@@ -15,6 +14,9 @@ type DriverStatus = {
   driverId: string;
   plate: string | null;
   destination: string | null;
+
+  etdTime?: string | null; // ✅ supaya garis muncul setelah ETD
+
   lat: number | null;
   lng: number | null;
   heading: number | null;
@@ -25,7 +27,6 @@ type DriverStatus = {
   };
 };
 
-// path jejak per driver
 type PathsByDriver = Record<string, google.maps.LatLngLiteral[]>;
 
 export default function RealtimeMap() {
@@ -38,7 +39,6 @@ export default function RealtimeMap() {
   const [drivers, setDrivers] = useState<DriverStatus[]>([]);
   const [paths, setPaths] = useState<PathsByDriver>({});
 
-  // ambil posisi driver dari backend (polling)
   useEffect(() => {
     let cancelled = false;
 
@@ -51,20 +51,26 @@ export default function RealtimeMap() {
         if (!cancelled) {
           setDrivers(data);
 
-          // update jejak path per driver
           setPaths((prev) => {
             const next: PathsByDriver = { ...prev };
 
             data.forEach((d) => {
-              if (!d.lat || !d.lng) return;
+              // ✅ null-check yang benar
+              if (d.lat == null || d.lng == null) return;
 
               const key = d.driverId;
+
+              // ✅ kalau belum ETD, jangan tampilkan garis (reset)
+              if (!d.etdTime) {
+                next[key] = [];
+                return;
+              }
+
               const point = { lat: d.lat, lng: d.lng };
 
               const existing = next[key] ?? [];
               const last = existing[existing.length - 1];
 
-              // hindari duplikat titik yang sama persis
               if (!last || last.lat !== point.lat || last.lng !== point.lng) {
                 next[key] = [...existing, point];
               }
@@ -78,8 +84,8 @@ export default function RealtimeMap() {
       }
     };
 
-    fetchPositions(); // pertama kali
-    const interval = setInterval(fetchPositions, 5000); // refresh tiap 5 detik
+    fetchPositions();
+    const interval = setInterval(fetchPositions, 5000);
 
     return () => {
       cancelled = true;
@@ -89,16 +95,14 @@ export default function RealtimeMap() {
 
   if (!isLoaded) return <p>Loading map...</p>;
 
-  // tentukan center map (pakai driver pertama yang punya lat/lng)
   const defaultCenter =
-    drivers.length > 0 && drivers[0].lat && drivers[0].lng
+    drivers.length > 0 && drivers[0].lat != null && drivers[0].lng != null
       ? { lat: drivers[0].lat, lng: drivers[0].lng }
-      : { lat: -6.2, lng: 106.8166 }; // fallback Jakarta
+      : { lat: -6.2, lng: 106.8166 };
 
   const zoomIn = () => {
     const map = mapRef.current;
     if (!map) return;
-
     const currentZoom = map.getZoom() ?? 14;
     map.setZoom(currentZoom + 1);
   };
@@ -106,14 +110,12 @@ export default function RealtimeMap() {
   const zoomOut = () => {
     const map = mapRef.current;
     if (!map) return;
-
     const currentZoom = map.getZoom() ?? 14;
     map.setZoom(currentZoom - 1);
   };
 
   return (
     <div className="relative w-full h-full min-h-screen">
-      {/* LOGOUT BUTTON */}
       <button
         onClick={() => {
           localStorage.removeItem("admin_token");
@@ -126,7 +128,6 @@ export default function RealtimeMap() {
         <Image src="/logout.png" width={22} height={22} alt="logout" />
       </button>
 
-      {/* GOOGLE MAP */}
       <GoogleMap
         zoom={14}
         center={defaultCenter}
@@ -139,30 +140,28 @@ export default function RealtimeMap() {
           gestureHandling: "greedy",
         }}
       >
-        {/* marker + jalur semua driver */}
         {drivers.map((d) => {
-          if (!d.lat || !d.lng) return null;
+          if (d.lat == null || d.lng == null) return null;
 
           const pos = { lat: d.lat, lng: d.lng };
-          const path = paths[d.driverId] ?? [pos];
+          const path = paths[d.driverId] ?? [];
 
-          // --- tambahan: text label (nopol + destinasi) ---
           const plate = d.plate ?? "-";
           const dest = d.destination ?? "-";
 
           return (
-            <div key={d.id}>
-              {/* garis rute (jejak perjalanan) */}
-              <Polyline
-                path={path}
-                options={{
-                  strokeOpacity: 0.9,
-                  strokeWeight: 4,
-                  // warna default (biar tidak set manual sesuai instruksi tools)
-                }}
-              />
+            <Fragment key={d.id}>
+              {/* tampilkan rute kalau minimal 2 titik */}
+              {path.length >= 2 && (
+                <Polyline
+                  path={path}
+                  options={{
+                    strokeOpacity: 0.9,
+                    strokeWeight: 4,
+                  }}
+                />
+              )}
 
-              {/* marker truk + label */}
               <Marker
                 position={pos}
                 label={{
@@ -175,16 +174,14 @@ export default function RealtimeMap() {
                   url: "/truck-marker.png",
                   scaledSize: new google.maps.Size(40, 40),
                   anchor: new google.maps.Point(20, 20),
-                  // posisi label di atas icon
                   labelOrigin: new google.maps.Point(20, -6),
                 }}
               />
-            </div>
+            </Fragment>
           );
         })}
       </GoogleMap>
 
-      {/* ZOOM BUTTONS */}
       <div className="absolute bottom-6 right-6 flex flex-col gap-3 z-50">
         <button
           onClick={zoomIn}
