@@ -55,12 +55,10 @@ export default function RealtimeMap() {
             const next: PathsByDriver = { ...prev };
 
             data.forEach((d) => {
-              // ✅ null-check yang benar
               if (d.lat == null || d.lng == null) return;
 
               const key = d.driverId;
 
-              // ✅ kalau belum ETD, jangan tampilkan garis (reset)
               if (!d.etdTime) {
                 next[key] = [];
                 return;
@@ -116,12 +114,11 @@ export default function RealtimeMap() {
 
   return (
     <div className="relative w-full h-full min-h-screen">
-      {/* ✅ WRAPPER tombol (minim perubahan): biar sejajar */}
       <div className="absolute top-6 right-6 z-50 flex items-center gap-3">
-        {/* ✅ tombol history (baru) */}
+        {/* ✅ History pindah halaman */}
         <button
           onClick={() => {
-            window.location.href = "/history"; // ganti route kalau beda
+            window.location.href = "/history";
           }}
           className="w-11 h-11 rounded-full bg-white shadow-xl border border-gray-300
                      flex items-center justify-center"
@@ -131,7 +128,6 @@ export default function RealtimeMap() {
           <Image src="/history.png" width={22} height={22} alt="history" />
         </button>
 
-        {/* tombol logout (kode kamu, nggak diubah logic-nya) */}
         <button
           onClick={() => {
             localStorage.removeItem("admin_token");
@@ -169,7 +165,6 @@ export default function RealtimeMap() {
 
           return (
             <Fragment key={d.id}>
-              {/* tampilkan rute kalau minimal 2 titik */}
               {path.length >= 2 && (
                 <Polyline
                   path={path}
