@@ -61,6 +61,9 @@ export default function RealtimeMap({ sidebarOpen }: RealtimeMapProps) {
   const [drivers, setDrivers] = useState<DriverStatus[]>([]);
   const [paths, setPaths] = useState<PathsByDriver>({});
 
+  // ✅ polyline hasil OSRM (ngikut jalan)
+  const [snappedPaths, setSnappedPaths] = useState<PathsByDriver>({});
+
   const [destFilter, setDestFilter] = useState<DestGroup>("ALL");
 
   const truckIcon = useMemo(() => {
@@ -208,6 +211,92 @@ export default function RealtimeMap({ sidebarOpen }: RealtimeMapProps) {
     map.zoomOut();
   };
 
+  // ✅ Lebih akurat:
+  // - Snapping pakai HISTORY dari DB (bukan hanya paths client)
+  // - Trigger snapping jika updatedAt terbaru driver berubah
+  const lastSnappedUpdatedAtRef = useRef<Record<string, string>>({});
+  const inFlightRef = useRef<Record<string, boolean>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const snapFromDbHistory = async (driverId: string) => {
+      if (inFlightRef.current[driverId]) return;
+      inFlightRef.current[driverId] = true;
+
+      try {
+        // ambil history titik dari DB (lebih konsisten)
+        const hRes = await fetch(
+          `/api/driver-status/history?driverId=${encodeURIComponent(
+            driverId
+          )}&limit=80`,
+          { method: "GET" }
+        );
+
+        const hJson = await hRes.json();
+        const pointsFromDb: Array<{ lat: number; lng: number; t?: string }> =
+          hJson?.ok && Array.isArray(hJson.points) ? hJson.points : [];
+
+        if (pointsFromDb.length < 2) return;
+
+        // kirim ke OSRM match (pakai timestamp kalau ada)
+        const mRes = await fetch("/api/osrm/match", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ coords: pointsFromDb }),
+        });
+
+        const mJson = await mRes.json();
+        if (cancelled) return;
+
+        if (
+          mJson?.ok &&
+          Array.isArray(mJson.points) &&
+          mJson.points.length >= 2
+        ) {
+          setSnappedPaths((prev) => ({
+            ...prev,
+            [driverId]: mJson.points as LatLng[],
+          }));
+        }
+      } catch (err) {
+        console.error("snapFromDbHistory error:", err);
+      } finally {
+        inFlightRef.current[driverId] = false;
+      }
+    };
+
+    drivers.forEach((d) => {
+      const driverId = d.driverId;
+
+      // kalau belum mulai / reset, kosongkan snapped juga
+      if (!d.etdTime) {
+        setSnappedPaths((prev) => {
+          if (!prev[driverId]?.length) return prev;
+          const next = { ...prev };
+          next[driverId] = [];
+          return next;
+        });
+        lastSnappedUpdatedAtRef.current[driverId] = d.updatedAt;
+        return;
+      }
+
+      // hanya proses yang punya lokasi
+      if (d.lat == null || d.lng == null) return;
+
+      // trigger kalau updatedAt berubah
+      const last = lastSnappedUpdatedAtRef.current[driverId];
+      if (last === d.updatedAt) return;
+
+      lastSnappedUpdatedAtRef.current[driverId] = d.updatedAt;
+      snapFromDbHistory(driverId);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [drivers]);
+
   return (
     <div
       ref={containerRef}
@@ -232,7 +321,11 @@ export default function RealtimeMap({ sidebarOpen }: RealtimeMapProps) {
           if (d.lat == null || d.lng == null) return null;
 
           const pos: LatLng = { lat: d.lat, lng: d.lng };
-          const path = paths[d.driverId] ?? [];
+
+          // ✅ pakai snappedPaths dulu kalau ada, fallback ke raw paths
+          const snapped = snappedPaths[d.driverId] ?? [];
+          const raw = paths[d.driverId] ?? [];
+          const pathToDraw = snapped.length >= 2 ? snapped : raw;
 
           const plate = (d.plate ?? "-").trim() || "-";
           const dest = (d.destination ?? "-").trim() || "-";
@@ -241,9 +334,9 @@ export default function RealtimeMap({ sidebarOpen }: RealtimeMapProps) {
 
           return (
             <Fragment key={d.id}>
-              {path.length >= 2 && (
+              {pathToDraw.length >= 2 && (
                 <PolylineAny
-                  positions={path}
+                  positions={pathToDraw}
                   pathOptions={{
                     color: "#1D4ED8",
                     weight: 4,

@@ -864,11 +864,14 @@ export default function DashboardPage() {
                     SIM
                   </button>
                 </div>
-
                 <button
                   type="button"
                   onClick={() => setDeliveryDateFilter(yesterdayWIB())}
-                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
+                  className={`rounded-xl border px-3 py-2 text-xs font-bold transition-colors ${
+                    deliveryDateFilter === yesterdayWIB()
+                      ? "border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                      : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                  }`}
                 >
                   Kemarin
                 </button>
@@ -876,11 +879,14 @@ export default function DashboardPage() {
                 <button
                   type="button"
                   onClick={() => setDeliveryDateFilter(todayWIB())}
-                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
+                  className={`rounded-xl border px-3 py-2 text-xs font-bold transition-colors ${
+                    deliveryDateFilter === todayWIB()
+                      ? "border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                      : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                  }`}
                 >
                   Hari ini
                 </button>
-
                 <input
                   type="date"
                   value={deliveryDateFilter}

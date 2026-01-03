@@ -88,3 +88,4 @@ model Admin {
   password  String
   createdAt DateTime @default(now())
 }
+
