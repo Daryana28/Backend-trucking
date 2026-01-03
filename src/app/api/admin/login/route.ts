@@ -1,6 +1,8 @@
 // src/app/api/admin/login/route.ts
+
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import bcrypt from "bcrypt";
 
 export const dynamic = "force-dynamic";
 
@@ -23,7 +25,12 @@ export async function POST(req: Request) {
       where: { username },
     });
 
-    if (!admin || admin.password !== password) {
+    // ✅ only change: compare password with bcrypt hash
+    const isValid = admin?.password
+      ? await bcrypt.compare(password, admin.password)
+      : false;
+
+    if (!admin || !isValid) {
       return NextResponse.json(
         { error: "Invalid credentials" },
         { status: 401 }

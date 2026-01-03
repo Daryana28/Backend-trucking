@@ -1,4 +1,5 @@
 // src/app/api/status/stream/route.ts
+
 import prisma from "@/lib/prisma";
 
 export const runtime = "nodejs";
@@ -14,7 +15,6 @@ export async function GET(req: Request) {
         if (closed) return;
 
         try {
-          // Kelompokkan berdasarkan tripGroup + driver
           const groups = await prisma.driverStatus.groupBy({
             by: ["tripGroup", "driverId"],
             _max: { updatedAt: true },
@@ -61,6 +61,14 @@ export async function GET(req: Request) {
               origin,
               destinationForward,
               destinationReverse,
+
+              // ✅ NEW
+              deliveryDate:
+                forward?.deliveryDate ??
+                reverse?.deliveryDate ??
+                anyStatus.deliveryDate ??
+                null,
+
               forward: forward
                 ? {
                     etdTime: forward.etdTime,

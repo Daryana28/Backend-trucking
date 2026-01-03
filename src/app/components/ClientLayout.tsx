@@ -1,3 +1,5 @@
+// src/app/components/ClientLayout.tsx
+
 "use client";
 
 import { usePathname } from "next/navigation";

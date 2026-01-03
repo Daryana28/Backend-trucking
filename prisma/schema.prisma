@@ -58,22 +58,28 @@ model Driver {
 }
 
 model DriverStatus {
-  driverId    String
-  plate       String?
-  destination String?
-  etdTime     String?
-  etaTime     String?
-  updatedAt   DateTime @updatedAt
-  id          String   @id @default(cuid())
-  direction   String?
-  isFinished  Boolean  @default(false)
-  tripGroup   String
-  origin      String?
-  heading     Float?
-  lat         Float?
-  lng         Float?
-  speed       Float?
-  driver      Driver   @relation(fields: [driverId], references: [id])
+  driverId      String
+  plate         String?
+  destination   String?
+  etdTime       String?
+  etaTime       String?
+  updatedAt     DateTime @updatedAt
+  id            String   @id @default(cuid())
+  direction     String?
+  isFinished    Boolean  @default(false)
+  tripGroup     String
+  origin        String?
+  heading       Float?
+  lat           Float?
+  lng           Float?
+  speed         Float?
+  driver        Driver   @relation(fields: [driverId], references: [id])
+
+  // ✅ NEW: tanggal delivery dari mobile (format: "YYYY-MM-DD")
+  deliveryDate  String?
+
+  @@index([driverId, tripGroup])
+  @@index([deliveryDate])
 }
 
 model Admin {

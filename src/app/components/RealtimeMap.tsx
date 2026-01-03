@@ -1,22 +1,25 @@
+// src/app/components/RealtimeMap.tsx
+
 "use client";
 
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
-  GoogleMap,
+  MapContainer,
   Marker,
   Polyline,
-  useLoadScript,
-} from "@react-google-maps/api";
-import { Fragment, useEffect, useRef, useState } from "react";
-import Image from "next/image";
+  TileLayer,
+  Tooltip,
+} from "react-leaflet";
+
+import L from "leaflet";
 
 type DriverStatus = {
   id: string;
   driverId: string;
   plate: string | null;
   destination: string | null;
-
-  etdTime?: string | null; // ✅ supaya garis muncul setelah ETD
-
+  etdTime?: string | null;
+  etaTime?: string | null;
   lat: number | null;
   lng: number | null;
   heading: number | null;
@@ -27,17 +30,47 @@ type DriverStatus = {
   };
 };
 
-type PathsByDriver = Record<string, google.maps.LatLngLiteral[]>;
+type LatLng = { lat: number; lng: number };
+type PathsByDriver = Record<string, LatLng[]>;
 
-export default function RealtimeMap() {
-  const { isLoaded } = useLoadScript({
-    googleMapsApiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY!,
-    libraries: ["geometry"],
-  });
+type RealtimeMapProps = {
+  sidebarOpen?: boolean;
+};
 
-  const mapRef = useRef<google.maps.Map | null>(null);
+type DestGroup = "ALL" | "YIMM" | "SIM";
+
+function getDestGroup(
+  dest?: string | null
+): Exclude<DestGroup, "ALL"> | "OTHER" {
+  const s = (dest ?? "").trim().toUpperCase();
+  if (s.startsWith("YIMM")) return "YIMM";
+  if (s.startsWith("SIM")) return "SIM";
+  return "OTHER";
+}
+
+const MapContainerAny = MapContainer as unknown as any;
+const TileLayerAny = TileLayer as unknown as any;
+const MarkerAny = Marker as unknown as any;
+const TooltipAny = Tooltip as unknown as any;
+const PolylineAny = Polyline as unknown as any;
+
+export default function RealtimeMap({ sidebarOpen }: RealtimeMapProps) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<any>(null);
+
   const [drivers, setDrivers] = useState<DriverStatus[]>([]);
   const [paths, setPaths] = useState<PathsByDriver>({});
+
+  const [destFilter, setDestFilter] = useState<DestGroup>("ALL");
+
+  const truckIcon = useMemo(() => {
+    return (L as any).icon({
+      iconUrl: "/truck-marker.png",
+      iconSize: [40, 40],
+      iconAnchor: [20, 20],
+      popupAnchor: [0, -20],
+    });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -65,7 +98,6 @@ export default function RealtimeMap() {
               }
 
               const point = { lat: d.lat, lng: d.lng };
-
               const existing = next[key] ?? [];
               const last = existing[existing.length - 1];
 
@@ -91,123 +123,208 @@ export default function RealtimeMap() {
     };
   }, []);
 
-  if (!isLoaded) return <p>Loading map...</p>;
+  const visibleDrivers = useMemo(() => {
+    const base = drivers.filter((d) => d.lat != null && d.lng != null);
+    if (destFilter === "ALL") return base;
+    return base.filter((d) => getDestGroup(d.destination) === destFilter);
+  }, [drivers, destFilter]);
 
   const defaultCenter =
-    drivers.length > 0 && drivers[0].lat != null && drivers[0].lng != null
-      ? { lat: drivers[0].lat, lng: drivers[0].lng }
+    visibleDrivers.length > 0 &&
+    visibleDrivers[0].lat != null &&
+    visibleDrivers[0].lng != null
+      ? { lat: visibleDrivers[0].lat, lng: visibleDrivers[0].lng }
       : { lat: -6.2, lng: 106.8166 };
+
+  const invalidate = () => {
+    const map = mapRef.current;
+    if (!map) return;
+    try {
+      map.invalidateSize();
+    } catch {}
+  };
+
+  useEffect(() => {
+    const r1 = requestAnimationFrame(() => invalidate());
+    const r2 = requestAnimationFrame(() =>
+      requestAnimationFrame(() => invalidate())
+    );
+    const t1 = window.setTimeout(() => invalidate(), 50);
+    const t2 = window.setTimeout(() => invalidate(), 200);
+    const t3 = window.setTimeout(() => invalidate(), 380);
+
+    return () => {
+      cancelAnimationFrame(r1);
+      cancelAnimationFrame(r2);
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+      window.clearTimeout(t3);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const t1 = window.setTimeout(() => invalidate(), 50);
+    const t2 = window.setTimeout(() => invalidate(), 320);
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sidebarOpen]);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => invalidate(), 0);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [destFilter]);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const ro = new ResizeObserver(() => invalidate());
+    ro.observe(el);
+
+    const onWin = () => invalidate();
+    window.addEventListener("resize", onWin);
+
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", onWin);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const zoomIn = () => {
     const map = mapRef.current;
     if (!map) return;
-    const currentZoom = map.getZoom() ?? 14;
-    map.setZoom(currentZoom + 1);
+    map.zoomIn();
   };
 
   const zoomOut = () => {
     const map = mapRef.current;
     if (!map) return;
-    const currentZoom = map.getZoom() ?? 14;
-    map.setZoom(currentZoom - 1);
+    map.zoomOut();
   };
 
   return (
-    <div className="relative w-full h-full min-h-screen">
-      <div className="absolute top-6 right-6 z-50 flex items-center gap-3">
-        {/* ✅ History pindah halaman */}
-        <button
-          onClick={() => {
-            window.location.href = "/history";
-          }}
-          className="w-11 h-11 rounded-full bg-white shadow-xl border border-gray-300
-                     flex items-center justify-center"
-          aria-label="history"
-          title="History"
-        >
-          <Image src="/history.png" width={22} height={22} alt="history" />
-        </button>
-
-        <button
-          onClick={() => {
-            localStorage.removeItem("admin_token");
-            window.location.href = "/login";
-          }}
-          className="w-11 h-11 rounded-full bg-white shadow-xl border border-gray-300
-                     flex items-center justify-center"
-          aria-label="logout"
-          title="Logout"
-        >
-          <Image src="/logout.png" width={22} height={22} alt="logout" />
-        </button>
-      </div>
-
-      <GoogleMap
-        zoom={14}
+    <div
+      ref={containerRef}
+      className="relative w-full h-[calc(100vh-4.5rem)] bg-[#F6F8FB] overflow-hidden"
+    >
+      <MapContainerAny
         center={defaultCenter}
-        onLoad={(map) => {
+        zoom={13}
+        className="w-full h-full rounded-2xl shadow-md border border-[#E5EBF3] overflow-hidden bg-white"
+        whenCreated={(map: any) => {
           mapRef.current = map;
+          setTimeout(() => invalidate(), 0);
         }}
-        mapContainerClassName="w-full h-full"
-        options={{
-          disableDefaultUI: true,
-          gestureHandling: "greedy",
-        }}
+        zoomControl={false}
       >
-        {drivers.map((d) => {
+        <TileLayerAny
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        />
+
+        {visibleDrivers.map((d) => {
           if (d.lat == null || d.lng == null) return null;
 
-          const pos = { lat: d.lat, lng: d.lng };
+          const pos: LatLng = { lat: d.lat, lng: d.lng };
           const path = paths[d.driverId] ?? [];
 
-          const plate = d.plate ?? "-";
-          const dest = d.destination ?? "-";
+          const plate = (d.plate ?? "-").trim() || "-";
+          const dest = (d.destination ?? "-").trim() || "-";
+          const etd = (d.etdTime ?? "-").trim() || "-";
+          const eta = (d.etaTime ?? "-").trim() || "-";
 
           return (
             <Fragment key={d.id}>
               {path.length >= 2 && (
-                <Polyline
-                  path={path}
-                  options={{
-                    strokeOpacity: 0.9,
-                    strokeWeight: 4,
+                <PolylineAny
+                  positions={path}
+                  pathOptions={{
+                    color: "#1D4ED8",
+                    weight: 4,
+                    opacity: 0.85,
                   }}
                 />
               )}
 
-              <Marker
-                position={pos}
-                label={{
-                  text: `${plate} • ${dest}`,
-                  color: "#ffffff",
-                  fontSize: "10px",
-                  fontWeight: "bold",
-                }}
-                icon={{
-                  url: "/truck-marker.png",
-                  scaledSize: new google.maps.Size(40, 40),
-                  anchor: new google.maps.Point(20, 20),
-                  labelOrigin: new google.maps.Point(20, -6),
-                }}
-              />
+              <MarkerAny position={pos} icon={truckIcon}>
+                <TooltipAny
+                  direction="top"
+                  offset={[0, -10]}
+                  permanent
+                  opacity={1}
+                  className="!bg-white !text-slate-800 !border-slate-200 !rounded-xl !shadow-md"
+                >
+                  {/* Hilangkan “dash/arrow” */}
+                  <style jsx global>{`
+                    .leaflet-tooltip:before {
+                      display: none !important;
+                    }
+                    .leaflet-tooltip {
+                      padding: 8px 10px !important;
+                    }
+                  `}</style>
+
+                  <div className="leading-tight">
+                    <div className="font-extrabold text-slate-900">
+                      {plate} <span className="text-slate-400">•</span>{" "}
+                      <span className="font-semibold">{dest}</span>
+                    </div>
+                    <div className="mt-0.5 text-[11px] font-semibold text-slate-500">
+                      ETD: <span className="text-slate-700">{etd}</span> • ETA:{" "}
+                      <span className="text-slate-700">{eta}</span>
+                    </div>
+                  </div>
+                </TooltipAny>
+              </MarkerAny>
             </Fragment>
           );
         })}
-      </GoogleMap>
+      </MapContainerAny>
+
+      {/* FILTER CONTROL */}
+      <div
+        className="absolute top-5 left-5"
+        style={{ zIndex: 99999, pointerEvents: "auto" }}
+      >
+        <div className="rounded-2xl border border-slate-200 bg-white/95 shadow-lg backdrop-blur px-3 py-2">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-slate-600">Filter</span>
+            <select
+              value={destFilter}
+              onChange={(e) => setDestFilter(e.target.value as DestGroup)}
+              className="text-xs font-semibold text-slate-900 outline-none bg-transparent"
+            >
+              <option value="ALL">All</option>
+              <option value="YIMM">YIMM</option>
+              <option value="SIM">SIM</option>
+            </select>
+
+            <span className="ml-2 inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
+              {visibleDrivers.length} driver
+            </span>
+          </div>
+        </div>
+      </div>
 
       <div className="absolute bottom-6 right-6 flex flex-col gap-3 z-50">
         <button
           onClick={zoomIn}
-          className="w-12 h-12 rounded-full bg-white shadow-lg border border-gray-300
-                     flex items-center justify-center text-2xl font-bold"
+          className="w-12 h-12 rounded-full bg-white shadow-lg border border-gray-300 flex items-center justify-center text-2xl font-bold"
+          type="button"
         >
           +
         </button>
 
         <button
           onClick={zoomOut}
-          className="w-12 h-12 rounded-full bg-white shadow-lg border border-gray-300
-                     flex items-center justify-center text-2xl font-bold"
+          className="w-12 h-12 rounded-full bg-white shadow-lg border border-gray-300 flex items-center justify-center text-2xl font-bold"
+          type="button"
         >
           –
         </button>

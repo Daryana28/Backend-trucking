@@ -1,12 +1,5 @@
-"use client";
-
-import Shell from "../components/Shell";
-import RealtimeMap from "../components/RealtimeMap";
+import { redirect } from "next/navigation";
 
 export default function HomePage() {
-  return (
-    <Shell>
-      <RealtimeMap />
-    </Shell>
-  );
+  redirect("/live");
 }

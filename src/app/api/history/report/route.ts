@@ -1,18 +1,10 @@
 // src/app/api/history/report/route.ts
+
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
 
-/**
- * Query params:
- * - q: keyword cari (plate / driver / tujuan / origin)
- * - plate: filter plate contains
- * - driverId: filter driverId
- * - dateFrom: YYYY-MM-DD (inclusive, WIB)
- * - dateTo: YYYY-MM-DD (inclusive, WIB)
- * - complete: "true" | "false" | "all"
- */
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
 
@@ -22,14 +14,11 @@ export async function GET(req: Request) {
 
   const dateFrom = (searchParams.get("dateFrom") ?? "").trim();
   const dateTo = (searchParams.get("dateTo") ?? "").trim();
-  const complete = (searchParams.get("complete") ?? "all").trim(); // all|true|false
+  const complete = (searchParams.get("complete") ?? "all").trim();
 
-  // ✅ range updatedAt (WIB) - supaya filter tanggal sesuai Indonesia
   const fromDt = dateFrom ? new Date(`${dateFrom}T00:00:00+07:00`) : null;
   const toDt = dateTo ? new Date(`${dateTo}T23:59:59.999+07:00`) : null;
 
-  // ✅ ambil statuses (pakai filter yang aman & ringan)
-  // NOTE: orderBy asc penting untuk ambil status terakhir per direction
   const statuses = await prisma.driverStatus.findMany({
     where: {
       ...(driverId ? { driverId } : {}),
@@ -45,10 +34,9 @@ export async function GET(req: Request) {
     },
     include: { driver: true },
     orderBy: { updatedAt: "asc" },
-    take: 10000, // ✅ batasi biar tidak berat (silakan naik/turun)
+    take: 10000,
   });
 
-  // group by tripGroup + driverId
   const groups = new Map<string, typeof statuses>();
 
   for (const s of statuses) {
@@ -58,7 +46,6 @@ export async function GET(req: Request) {
     groups.set(key, arr);
   }
 
-  // build rows report
   const rows = Array.from(groups.values())
     .map((arr) => {
       if (!arr.length) return null;
@@ -79,7 +66,13 @@ export async function GET(req: Request) {
 
         plate: forward?.plate ?? reverse?.plate ?? last.plate ?? null,
 
-        // rute
+        // ✅ NEW
+        deliveryDate:
+          forward?.deliveryDate ??
+          reverse?.deliveryDate ??
+          last.deliveryDate ??
+          null,
+
         originForward: forward?.origin ?? null,
         destinationForward: forward?.destination ?? null,
         etdForward: forward?.etdTime ?? null,
@@ -90,12 +83,10 @@ export async function GET(req: Request) {
         etdReverse: reverse?.etdTime ?? null,
         etaReverse: reverse?.etaTime ?? null,
 
-        // meta
         isComplete,
         lastUpdated: last.updatedAt.toISOString(),
       };
 
-      // keyword filter (q)
       if (q) {
         const hay = [
           row.plate,
@@ -105,6 +96,7 @@ export async function GET(req: Request) {
           row.destinationForward,
           row.originReverse,
           row.destinationReverse,
+          row.deliveryDate,
         ]
           .filter(Boolean)
           .join(" ")
@@ -113,7 +105,6 @@ export async function GET(req: Request) {
         if (!hay.includes(q.toLowerCase())) return null;
       }
 
-      // complete filter
       if (complete === "true" && !row.isComplete) return null;
       if (complete === "false" && row.isComplete) return null;
 
@@ -121,7 +112,6 @@ export async function GET(req: Request) {
     })
     .filter(Boolean) as any[];
 
-  // sort terbaru dulu
   rows.sort((a, b) => (a.lastUpdated < b.lastUpdated ? 1 : -1));
 
   return NextResponse.json({ ok: true, data: rows });

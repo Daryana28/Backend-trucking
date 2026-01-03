@@ -1,4 +1,5 @@
 // src/app/api/status/update/route.ts
+
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { getDriverFromAuth } from "@/lib/auth";
@@ -29,6 +30,9 @@ export async function POST(req: Request) {
       lng,
       speed,
       heading,
+
+      // ✅ NEW: deliveryDate dari mobile (YYYY-MM-DD)
+      deliveryDate,
     } = body;
 
     const dir: "forward" | "reverse" =
@@ -49,6 +53,12 @@ export async function POST(req: Request) {
     if (plate && plate !== last?.plate) makeNewTrip = true;
     if (last?.isFinished && (etdTime || etaTime || plate || destination)) {
       makeNewTrip = true;
+    }
+
+    // ✅ kalau deliveryDate berubah, anggap trip baru (biar tidak ketimpa)
+    if (deliveryDate && deliveryDate !== last?.deliveryDate) {
+      // hanya buat baru kalau memang ada aktivitas baru
+      if (etdTime || etaTime || plate || destination) makeNewTrip = true;
     }
 
     let tripGroup = last?.tripGroup || "";
@@ -75,6 +85,10 @@ export async function POST(req: Request) {
     const finalEtd = etdTime ?? lastSameDir?.etdTime ?? null;
     const finalEta = etaTime ?? lastSameDir?.etaTime ?? null;
 
+    // ✅ deliveryDate final: kalau mobile kirim pakai itu, kalau tidak pakai yg terakhir
+    const finalDeliveryDate =
+      deliveryDate ?? lastSameDir?.deliveryDate ?? last?.deliveryDate ?? null;
+
     // 🔹 lokasi final: kalau body kirim pakai itu, kalau tidak pakai status terakhir
     const finalLat = lat ?? lastSameDir?.lat ?? last?.lat ?? null;
     const finalLng = lng ?? lastSameDir?.lng ?? last?.lng ?? null;
@@ -96,6 +110,9 @@ export async function POST(req: Request) {
         direction: dir,
         tripGroup,
         isFinished,
+
+        // ✅ NEW
+        deliveryDate: finalDeliveryDate,
 
         // 🔹 simpan lokasi juga
         lat: finalLat,
