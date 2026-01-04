@@ -19,11 +19,18 @@ const MENU = [
 
   // ✅ selalu tampil
   { href: "/admin/plan", label: "Plan Delivery", icon: "plan" as const },
+
+  // ✅ NEW: halaman pembuatan akun driver
+  {
+    href: "/admin/drivers",
+    label: "Driver Accounts",
+    icon: "drivers" as const,
+  },
 ];
 
 const GENERAL = [{ href: "/logout", label: "Logout", icon: "logout" as const }];
 
-type IconName = "grid" | "radio" | "plan" | "logout";
+type IconName = "grid" | "radio" | "plan" | "drivers" | "logout";
 
 function Icon({ name, active = false }: { name: IconName; active?: boolean }) {
   const stroke = active ? "#FFFFFF" : "#64748B";
@@ -79,6 +86,22 @@ function Icon({ name, active = false }: { name: IconName; active?: boolean }) {
           <path d="M9 8h6" />
           <path d="M9 12h6" />
           <path d="M9 16h6" />
+        </svg>
+      );
+    case "drivers":
+      return (
+        <svg
+          width="22"
+          height="22"
+          viewBox="0 0 24 24"
+          stroke={stroke}
+          fill="none"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+          <circle cx="12" cy="7" r="4" />
         </svg>
       );
     case "logout":
@@ -355,7 +378,7 @@ export default function AppSidebar({
 
             <div className="hidden sm:flex items-center gap-2">
               <span className="text-sm font-semibold text-slate-700 bg-blue-50 px-3 py-1.5 rounded-md border border-blue-200">
-                Trucking Monitoring
+                Delivery Tracking Monitoring
               </span>
               <span className="text-sm font-bold text-red-600 bg-red-50 px-3 py-1.5 rounded-md border border-red-200">
                 PT Indonesia Koito

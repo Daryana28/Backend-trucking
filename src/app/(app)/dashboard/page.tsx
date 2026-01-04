@@ -299,115 +299,188 @@ function StatCard({
   );
 }
 
-function MiniLineChart({
-  points,
-  height = 240,
-  badgeLabel = "Chart",
-  minMaxRight,
+// ================================
+// ✅ Chart A: On-time vs Delay
+// ================================
+function OnTimeVsDelayChart({
+  badgeLabel,
+  onTime,
+  delayed,
+  noData,
 }: {
-  points: { label: string; value: number }[];
-  height?: number;
-  badgeLabel?: string;
-  minMaxRight?: React.ReactNode;
+  badgeLabel: string;
+  onTime: number;
+  delayed: number;
+  noData: number;
 }) {
-  const width = 980;
-  const padX = 28;
-  const padTop = 18;
-  const padBottom = 34;
-
-  const values = points.map((p) => p.value);
-  const maxV = Math.max(1, ...values);
-  const minV = Math.min(0, ...values);
-
-  const innerW = width - padX * 2;
-  const innerH = height - padTop - padBottom;
-
-  const toX = (i: number) =>
-    padX + (points.length <= 1 ? 0 : (i / (points.length - 1)) * innerW);
-  const toY = (v: number) =>
-    padTop + (1 - (v - minV) / (maxV - minV || 1)) * innerH;
-
-  const d = points
-    .map(
-      (p, i) =>
-        `${i === 0 ? "M" : "L"} ${toX(i).toFixed(2)} ${toY(p.value).toFixed(2)}`
-    )
-    .join(" ");
-
-  const areaD = `${d} L ${toX(points.length - 1).toFixed(2)} ${(
-    padTop + innerH
-  ).toFixed(2)} L ${toX(0).toFixed(2)} ${(padTop + innerH).toFixed(2)} Z`;
-
-  const leftLabel = points[0]?.label ?? "-";
-  const rightLabel = points[points.length - 1]?.label ?? "-";
+  const total = Math.max(1, onTime + delayed + noData);
+  // Donut chart: each segment is a portion of 360deg
+  const getSegment = (value: number) => (value / total) * 100;
+  const segments = [
+    { label: "On-time", value: onTime, color: "#16A34A" },
+    { label: "Delay", value: delayed, color: "#DC2626" },
+    { label: "No data", value: noData, color: "#94A3B8" },
+  ];
+  // For SVG arc, use stroke-dasharray and stroke-dashoffset
+  let acc = 0;
+  const donutSegments = segments.map((seg) => {
+    const percent = getSegment(seg.value);
+    const from = acc;
+    acc += percent;
+    return { ...seg, percent, from };
+  });
+  // Donut size
+  const size = 120;
+  const stroke = 18;
+  const radius = (size - stroke) / 2;
+  const center = size / 2;
+  const circumference = 2 * Math.PI * radius;
 
   return (
     <div className="w-full">
       <div className="mb-3 flex items-center justify-between">
         <Badge>{badgeLabel}</Badge>
         <div className="text-xs font-semibold text-slate-600">
-          {minMaxRight ?? (
-            <>
-              Min: <span className="text-slate-900">{minV}</span> • Max:{" "}
-              <span className="text-slate-900">{maxV}</span>
-            </>
-          )}
+          By trip (count)
         </div>
       </div>
-
-      <div className="rounded-2xl border border-slate-200 bg-gradient-to-b from-white to-slate-50 p-3">
-        <svg viewBox={`0 0 ${width} ${height}`} className="h-[240px] w-full">
-          <g>
-            {[0, 1, 2, 3].map((i) => {
-              const y = padTop + (i / 3) * innerH;
+      <div className="rounded-2xl border border-slate-200 bg-gradient-to-b from-white to-slate-50 p-4 flex flex-col items-center">
+        {/* Donut SVG */}
+        <div
+          className="relative flex items-center justify-center"
+          style={{ width: size, height: size }}
+        >
+          <svg width={size} height={size} className="block">
+            {donutSegments.map((seg, idx) => {
+              // stroke-dasharray: portion, rest
+              const dash = (seg.percent / 100) * circumference;
+              const rest = circumference - dash;
+              // stroke-dashoffset: sum of previous
+              const offset = (seg.from / 100) * circumference;
               return (
-                <line
-                  key={i}
-                  x1={padX}
-                  y1={y}
-                  x2={padX + innerW}
-                  y2={y}
-                  stroke="#E5E7EB"
-                  strokeWidth="1"
+                <circle
+                  key={seg.label}
+                  cx={center}
+                  cy={center}
+                  r={radius}
+                  fill="none"
+                  stroke={seg.color}
+                  strokeWidth={stroke}
+                  strokeDasharray={`${dash} ${rest}`}
+                  strokeDashoffset={-offset}
+                  strokeLinecap="butt"
+                  style={{
+                    transform: "rotate(-90deg)",
+                    transformOrigin: "50% 50%",
+                    transition: "stroke-dasharray 0.5s",
+                  }}
                 />
               );
             })}
-          </g>
-
-          <g fontSize="12" fill="#64748B" fontWeight="600">
-            <text x={padX} y={padTop + 12} textAnchor="start">
-              {maxV}
-            </text>
-            <text x={padX} y={padTop + innerH} textAnchor="start">
-              {minV}
-            </text>
-          </g>
-
-          <path d={areaD} fill="#2563EB" opacity={0.1} />
-          <path
-            d={d}
-            fill="none"
-            stroke="#2563EB"
-            strokeWidth={3.5}
-            strokeLinecap="round"
-          />
-
-          {points.map((p, i) => (
+            {/* Background circle for empty */}
             <circle
-              key={i}
-              cx={toX(i)}
-              cy={toY(p.value)}
-              r={4.2}
-              fill="#2563EB"
-              opacity={0.95}
+              cx={center}
+              cy={center}
+              r={radius}
+              fill="none"
+              stroke="#E5E7EB"
+              strokeWidth={stroke}
+              style={{
+                position: "absolute",
+                left: 0,
+                top: 0,
+                zIndex: 0,
+              }}
             />
-          ))}
-        </svg>
-
-        <div className="mt-2 flex items-center justify-between text-xs font-semibold text-slate-600">
-          <span>{leftLabel}</span>
-          <span>{rightLabel}</span>
+          </svg>
+          {/* Center text */}
+          <div
+            className="absolute inset-0 flex flex-col items-center justify-center"
+            style={{ pointerEvents: "none" }}
+          >
+            <span className="text-[11px] font-semibold text-slate-500">
+              Total Trip
+            </span>
+            <span className="text-2xl font-extrabold text-slate-900">
+              {onTime + delayed + noData}
+            </span>
+          </div>
         </div>
+        {/* Legend */}
+        <div className="mt-5 flex flex-col gap-2 w-full max-w-xs">
+          {segments.map((seg) => (
+            <div
+              key={seg.label}
+              className="flex items-center justify-between text-xs font-semibold"
+            >
+              <div className="flex items-center gap-2">
+                <span
+                  className="inline-block h-3 w-3 rounded-full"
+                  style={{ background: seg.color }}
+                />
+                <span className="font-extrabold text-slate-800">
+                  {seg.label}
+                </span>
+              </div>
+              <div className="font-extrabold text-slate-900">{seg.value}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ================================
+// ✅ Chart C: Top Delay Destinations
+// ================================
+function TopDelayDestinationsChart({
+  badgeLabel,
+  rows,
+}: {
+  badgeLabel: string;
+  rows: { label: string; avgDelayMin: number; sample: number }[];
+}) {
+  const maxV = Math.max(1, ...rows.map((r) => r.avgDelayMin));
+  return (
+    <div className="w-full">
+      <div className="mb-3 flex items-center justify-between">
+        <Badge>{badgeLabel}</Badge>
+        <div className="text-xs font-semibold text-slate-600">
+          Avg delay (min)
+        </div>
+      </div>
+      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        {rows.length === 0 ? (
+          <div className="text-sm font-medium text-slate-500">
+            Belum ada data delay.
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {rows.map((r) => {
+              const w = clamp((r.avgDelayMin / maxV) * 100, 6, 100);
+              return (
+                <div key={r.label} className="flex items-center gap-2">
+                  <div className="truncate flex-1 text-sm font-extrabold text-slate-900 max-w-[120px]">
+                    {r.label}
+                  </div>
+                  <div className="flex-1">
+                    <div className="h-3.5 rounded bg-rose-100 relative">
+                      <div
+                        className="h-3.5 rounded bg-rose-600"
+                        style={{ width: `${w}%` }}
+                      ></div>
+                    </div>
+                  </div>
+                  <span className="ml-2 shrink-0 rounded-full border border-rose-200 bg-rose-50 px-3 py-1 text-xs font-extrabold text-rose-700">
+                    {Math.round(r.avgDelayMin)}m
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        <div className="mt-2 text-[11px] font-semibold text-slate-500"></div>
       </div>
     </div>
   );
@@ -427,12 +500,12 @@ function PlanLineActualBarChart({
   rows: { label: string; planCount: number; completeCount: number }[];
 }) {
   // ✅ dibuat lebih tinggi supaya label destinasi kebaca
-  const width = 980;
+  const width = Math.max(980, rows.length * 120);
   const height = 340;
 
   const padX = 34;
   const padTop = 20;
-  const padBottom = 120;
+  const padBottom = 170;
 
   const innerW = width - padX * 2;
   const innerH = height - padTop - padBottom;
@@ -465,7 +538,7 @@ function PlanLineActualBarChart({
     if (!s) return ["-"];
 
     // kalau pendek, langsung
-    if (s.length <= 16) return [s];
+    if (s.length <= 14) return [s];
 
     // coba pecah di spasi terdekat tengah
     const parts = s.split(/\s+/).filter(Boolean);
@@ -491,8 +564,8 @@ function PlanLineActualBarChart({
     const l2 = b.join(" ");
 
     // safety truncate
-    const t1 = l1.length > 20 ? l1.slice(0, 20) + "…" : l1;
-    const t2 = l2.length > 20 ? l2.slice(0, 20) + "…" : l2;
+    const t1 = l1.length > 16 ? l1.slice(0, 16) + "…" : l1;
+    const t2 = l2.length > 16 ? l2.slice(0, 16) + "…" : l2;
 
     return t2 ? [t1, t2] : [t1];
   };
@@ -513,109 +586,112 @@ function PlanLineActualBarChart({
           </div>
         ) : (
           <>
-            <svg
-              viewBox={`0 0 ${width} ${height}`}
-              className="h-[340px] w-full"
-            >
-              {/* grid */}
-              <g>
-                {[0, 1, 2, 3].map((i) => {
-                  const y = padTop + (i / 3) * innerH;
-                  return (
-                    <line
-                      key={i}
-                      x1={padX}
-                      y1={y}
-                      x2={padX + innerW}
-                      y2={y}
-                      stroke="#E5E7EB"
-                      strokeWidth="1"
-                    />
-                  );
-                })}
-              </g>
-
-              {/* bars (actual complete) */}
-              <g>
-                {rows.map((r, i) => {
-                  if (!r.completeCount) return null;
-                  const x = toX(i) - barW / 2;
-                  const y = toY(r.completeCount);
-                  const h = padTop + innerH - y;
-                  return (
-                    <g key={i}>
-                      <rect
-                        x={x}
-                        y={y}
-                        width={barW}
-                        height={Math.max(0, h)}
-                        rx={10}
-                        fill="#16A34A"
-                        opacity={0.85}
+            <div className="overflow-x-auto">
+              <svg
+                viewBox={`0 0 ${width} ${height}`}
+                className="h-[340px]"
+                style={{ minWidth: width }}
+              >
+                {/* grid */}
+                <g>
+                  {[0, 1, 2, 3].map((i) => {
+                    const y = padTop + (i / 3) * innerH;
+                    return (
+                      <line
+                        key={i}
+                        x1={padX}
+                        y1={y}
+                        x2={padX + innerW}
+                        y2={y}
+                        stroke="#E5E7EB"
+                        strokeWidth="1"
                       />
-                      {/* value label on top of bar */}
-                      <text
-                        x={toX(i)}
-                        y={Math.max(padTop + 12, y - 8)}
-                        textAnchor="middle"
-                        fontSize="12"
-                        fontWeight="800"
-                        fill="#64748B"
-                      >
-                        {r.completeCount}
-                      </text>
-                    </g>
-                  );
-                })}
-              </g>
+                    );
+                  })}
+                </g>
 
-              {/* plan line (target count) */}
-              <path
-                d={lineD}
-                fill="none"
-                stroke="#2563EB"
-                strokeWidth={3.5}
-                strokeLinecap="round"
-              />
-              {rows.map((r, i) => (
-                <circle
-                  key={i}
-                  cx={toX(i)}
-                  cy={toY(r.planCount)}
-                  r={4.2}
-                  fill="#2563EB"
-                  opacity={0.95}
+                {/* bars (actual complete) */}
+                <g>
+                  {rows.map((r, i) => {
+                    if (!r.completeCount) return null;
+                    const x = toX(i) - barW / 2;
+                    const y = toY(r.completeCount);
+                    const h = padTop + innerH - y;
+                    return (
+                      <g key={i}>
+                        <rect
+                          x={x}
+                          y={y}
+                          width={barW}
+                          height={Math.max(0, h)}
+                          rx={10}
+                          fill="#16A34A"
+                          opacity={0.85}
+                        />
+                        {/* value label on top of bar */}
+                        <text
+                          x={toX(i)}
+                          y={Math.max(padTop + 12, y - 8)}
+                          textAnchor="middle"
+                          fontSize="12"
+                          fontWeight="800"
+                          fill="#64748B"
+                        >
+                          {r.completeCount}
+                        </text>
+                      </g>
+                    );
+                  })}
+                </g>
+
+                {/* plan line (target count) */}
+                <path
+                  d={lineD}
+                  fill="none"
+                  stroke="#2563EB"
+                  strokeWidth={3.5}
+                  strokeLinecap="round"
                 />
-              ))}
+                {rows.map((r, i) => (
+                  <circle
+                    key={i}
+                    cx={toX(i)}
+                    cy={toY(r.planCount)}
+                    r={4.2}
+                    fill="#2563EB"
+                    opacity={0.95}
+                  />
+                ))}
 
-              {/* axis labels */}
-              <g fontSize="12" fill="#64748B" fontWeight="800">
-                <text x={padX} y={padTop + 12} textAnchor="start">
-                  {maxY}
-                </text>
-                <text x={padX} y={padTop + innerH + 14} textAnchor="start">
-                  0
-                </text>
-              </g>
+                {/* axis labels */}
+                <g fontSize="12" fill="#64748B" fontWeight="800">
+                  <text x={padX} y={padTop + 12} textAnchor="start">
+                    {maxY}
+                  </text>
+                  <text x={padX} y={padTop + innerH + 14} textAnchor="start">
+                    0
+                  </text>
+                </g>
 
-              {/* x labels (destination) - ✅ multiline, tidak diputar supaya tidak kepotong */}
-              <g fontSize="11" fill="#475569" fontWeight="800">
-                {rows.map((r, i) => {
-                  const lines = wrap2(r.label);
-                  const x = toX(i);
-                  const y = padTop + innerH + 32;
-                  return (
-                    <text key={i} x={x} y={y} textAnchor="middle">
-                      {lines.map((ln, idx) => (
-                        <tspan key={idx} x={x} dy={idx === 0 ? 0 : 14}>
-                          {ln}
-                        </tspan>
-                      ))}
-                    </text>
-                  );
-                })}
-              </g>
-            </svg>
+                {/* x labels (destination) - ✅ multiline, tidak diputar supaya tidak kepotong */}
+                <g fontSize="10" fill="#475569" fontWeight="700">
+                  {rows.map((r, i) => {
+                    const lines = wrap2(r.label);
+                    const x = toX(i);
+                    const y = padTop + innerH + 48;
+                    return (
+                      <text key={i} x={x} y={y} textAnchor="middle">
+                        {lines.map((ln, idx) => (
+                          <tspan key={idx} x={x} dy={idx === 0 ? 0 : 14}>
+                            {ln}
+                          </tspan>
+                        ))}
+                      </text>
+                    );
+                  })}
+                </g>
+              </svg>
+            </div>
 
             {/* <div className="mt-2 flex items-center justify-between text-xs font-semibold text-slate-600">
               <span className="truncate">{leftLabel}</span>
@@ -809,8 +885,6 @@ export default function DashboardPage() {
   const [planFromDb, setPlanFromDb] = useState<PlanMap | null>(null);
 
   const [latest, setLatest] = useState<DriverStatus[]>([]);
-  const [series, setSeries] = useState<{ t: string; active: number }[]>([]);
-  const tickRef = useRef<string | null>(null);
 
   const [historyRows, setHistoryRows] = useState<HistoryRow[]>([]);
   const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
@@ -945,28 +1019,6 @@ export default function DashboardPage() {
       if (!max || d.updatedAt > max) max = d.updatedAt;
     return max;
   }, [activeDrivers]);
-
-  useEffect(() => {
-    const now = new Date();
-    const key = `${now.getHours()}:${now.getMinutes()}:${now.getSeconds()}`;
-    if (tickRef.current === key) return;
-    tickRef.current = key;
-
-    setSeries((prev) => {
-      const next = [
-        ...prev,
-        { t: fmtTimeHHmmss(now), active: activeDriversCount },
-      ];
-      return next.length > 30 ? next.slice(next.length - 30) : next;
-    });
-  }, [activeDriversCount]);
-
-  const realtimeLinePoints = useMemo(
-    () => series.map((p) => ({ label: p.t, value: p.active })),
-    [series]
-  );
-
-  const updatesByHour = metrics?.updates24h?.byHour ?? [];
 
   // ✅ pilih plan yang dipakai: DB > fallback
   const effectivePlan: PlanMap = useMemo(() => {
@@ -1109,6 +1161,94 @@ export default function DashboardPage() {
     });
   }, [historyRows, effectivePlan, planGroupFilter]);
 
+  // ✅ A: On-time vs Delay summary (ikuti Mode + Group + Date)
+  const onTimeDelaySummary = useMemo(() => {
+    let onTime = 0;
+    let delayed = 0;
+    let noData = 0;
+
+    for (const r of historyRows) {
+      // destination sesuai leg
+      const dest =
+        planLegMode === "forward"
+          ? (r.destinationForward ?? "").trim()
+          : (r.destinationReverse ?? "").trim();
+
+      if (!dest || !effectivePlan[dest]) continue;
+
+      const g = (effectivePlan[dest]?.group ?? "").trim();
+      if (planGroupFilter !== "ALL" && g !== planGroupFilter) continue;
+
+      const plan = effectivePlan[dest]?.[planLegMode];
+      const planEtd = plan?.etd ?? null;
+      const planEta = plan?.eta ?? null;
+
+      const etdA = planLegMode === "forward" ? r.etdForward : r.etdReverse;
+      const etaA = planLegMode === "forward" ? r.etaForward : r.etaReverse;
+
+      const de = delayMin(planEtd, etdA);
+      const da = delayMin(planEta, etaA);
+
+      // No data kalau plan atau actual tidak bisa dihitung
+      const hasAny = de != null || da != null;
+      if (!hasAny) {
+        noData += 1;
+        continue;
+      }
+
+      const isDelayed = (de != null && de > 0) || (da != null && da > 0);
+      if (isDelayed) delayed += 1;
+      else onTime += 1;
+    }
+
+    return { onTime, delayed, noData };
+  }, [historyRows, effectivePlan, planGroupFilter, planLegMode]);
+
+  // ✅ C: Top delay destinations (avg delay minutes) - Top 5
+  const topDelayDestinations = useMemo(() => {
+    const map = new Map<string, number[]>();
+
+    for (const r of historyRows) {
+      const dest =
+        planLegMode === "forward"
+          ? (r.destinationForward ?? "").trim()
+          : (r.destinationReverse ?? "").trim();
+
+      if (!dest || !effectivePlan[dest]) continue;
+
+      const g = (effectivePlan[dest]?.group ?? "").trim();
+      if (planGroupFilter !== "ALL" && g !== planGroupFilter) continue;
+
+      const plan = effectivePlan[dest]?.[planLegMode];
+      const etdA = planLegMode === "forward" ? r.etdForward : r.etdReverse;
+      const etaA = planLegMode === "forward" ? r.etaForward : r.etaReverse;
+
+      const de = delayMin(plan?.etd ?? null, etdA);
+      const da = delayMin(plan?.eta ?? null, etaA);
+
+      // ambil delay terbesar per trip (lebih representatif)
+      const d1 = de ?? null;
+      const d2 = da ?? null;
+      const best = d1 == null && d2 == null ? null : Math.max(d1 ?? 0, d2 ?? 0);
+
+      if (best == null) continue;
+      if (best <= 0) continue; // hanya yang delay
+
+      const arr = map.get(dest) ?? [];
+      arr.push(best);
+      map.set(dest, arr);
+    }
+
+    return Array.from(map.entries())
+      .map(([label, arr]) => ({
+        label,
+        avgDelayMin: arr.reduce((a, b) => a + b, 0) / Math.max(1, arr.length),
+        sample: arr.length,
+      }))
+      .sort((a, b) => b.avgDelayMin - a.avgDelayMin)
+      .slice(0, 5);
+  }, [historyRows, effectivePlan, planGroupFilter, planLegMode]);
+
   return (
     <div className="min-h-[calc(100vh-4rem)] w-full bg-slate-50">
       <div className="w-full px-3 md:px-4 lg:px-6 xl:px-8 py-6 space-y-5">
@@ -1187,61 +1327,155 @@ export default function DashboardPage() {
               </svg>
             }
           />
-
         </div>
 
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-sm font-extrabold text-slate-900">
-                  Active Drivers
-                </div>
-                <div className="text-xs font-medium text-slate-600"></div>
+        {/* ✅ Global Filter (dipakai untuk semua section) */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            {/* Group */}
+            <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2">
+              <div className="mr-1 text-[11px] font-extrabold text-slate-600">
+                Group
               </div>
-              <Badge>{activeDriversCount} driver</Badge>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPlanGroupFilter("ALL")}
+                  className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
+                    planGroupFilter === "ALL"
+                      ? "border-blue-200 bg-blue-50 text-blue-700"
+                      : "border-slate-200 bg-white text-slate-700"
+                  }`}
+                >
+                  All
+                </button>
+
+                {availableGroups.map((g) => (
+                  <button
+                    key={g}
+                    type="button"
+                    onClick={() => setPlanGroupFilter(g)}
+                    className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
+                      planGroupFilter === g
+                        ? "border-blue-200 bg-blue-50 text-blue-700"
+                        : "border-slate-200 bg-white text-slate-700"
+                    }`}
+                  >
+                    {g}
+                  </button>
+                ))}
+              </div>
             </div>
 
-            <div className="mt-4">
-              <MiniLineChart
-                badgeLabel="Realtime Active"
-                points={
-                  realtimeLinePoints.length
-                    ? realtimeLinePoints
-                    : [{ label: "-", value: 0 }]
-                }
+            {/* Date */}
+            <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2">
+              <div className="mr-1 text-[11px] font-extrabold text-slate-600">
+                Date
+              </div>
+              <button
+                type="button"
+                onClick={() => setDeliveryDateFilter(yesterdayWIB())}
+                className={`rounded-xl border px-3 py-2 text-xs font-bold transition-colors ${
+                  deliveryDateFilter === yesterdayWIB()
+                    ? "border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                    : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                }`}
+              >
+                Kemarin
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setDeliveryDateFilter(todayWIB())}
+                className={`rounded-xl border px-3 py-2 text-xs font-bold transition-colors ${
+                  deliveryDateFilter === todayWIB()
+                    ? "border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                    : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                }`}
+              >
+                Hari ini
+              </button>
+
+              <input
+                type="date"
+                value={deliveryDateFilter}
+                onChange={(e) => setDeliveryDateFilter(e.target.value)}
+                className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 outline-none"
               />
             </div>
+
+            {/* Mode */}
+            <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2">
+              <div className="mr-1 text-[11px] font-extrabold text-slate-600">
+                Mode
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPlanLegMode("forward")}
+                  className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
+                    planLegMode === "forward"
+                      ? "border-blue-200 bg-blue-50 text-blue-700"
+                      : "border-slate-200 bg-white text-slate-700"
+                  }`}
+                >
+                  Forward
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPlanLegMode("reverse")}
+                  className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
+                    planLegMode === "reverse"
+                      ? "border-blue-200 bg-blue-50 text-blue-700"
+                      : "border-slate-200 bg-white text-slate-700"
+                  }`}
+                >
+                  Reverse
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ✅ A & C: Pengganti 2 grafik lama (posisi side-by-side) */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <OnTimeVsDelayChart
+              badgeLabel={`On-time vs Delay`}
+              onTime={onTimeDelaySummary.onTime}
+              delayed={onTimeDelaySummary.delayed}
+              noData={onTimeDelaySummary.noData}
+            />
           </div>
 
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="flex items-start justify-between gap-3">
+            <TopDelayDestinationsChart
+              badgeLabel={`Top Delay Destinations`}
+              rows={topDelayDestinations}
+            />
+          </div>
+        </div>
+
+        {/* ✅ Grafik baru: Overall Delivery Complete (Plan line, Actual bar) */}
+        <div className="grid grid-cols-1 gap-4">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
               <div>
                 <div className="text-sm font-extrabold text-slate-900">
-                  Updates per Hour (24h, WIB)
+                  Overall Delivery (Complete)
                 </div>
                 <div className="text-xs font-medium text-slate-600">
-                  total update 24 jam:{" "}
                   <span className="font-semibold text-slate-900">
-                    {metrics?.updates24h?.total ?? "-"}
+                    {fmtDeliveryDate(deliveryDateFilter)}
                   </span>
                 </div>
               </div>
             </div>
 
             <div className="mt-4">
-              <MiniLineChart
-                badgeLabel="Updates / Hour"
-                points={
-                  updatesByHour.length
-                    ? updatesByHour
-                    : [{ label: "-", value: 0 }]
-                }
-                minMaxRight={
-                  <span className="text-xs font-semibold text-slate-600">
-                    24 jam terakhir
-                  </span>
-                }
+              <PlanLineActualBarChart
+                badgeLabel="Plan vs Actual (Complete)"
+                rows={overallCompleteRows}
               />
             </div>
           </div>
@@ -1261,111 +1495,6 @@ export default function DashboardPage() {
                   </span>
                 </div>
               </div>
-
-              <div className="flex flex-wrap items-center gap-3">
-                {/* Mode: Forward / Reverse */}
-                <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2">
-                  <div className="mr-1 text-[11px] font-extrabold text-slate-600">
-                    Mode
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setPlanLegMode("forward")}
-                      className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
-                        planLegMode === "forward"
-                          ? "border-blue-200 bg-blue-50 text-blue-700"
-                          : "border-slate-200 bg-white text-slate-700"
-                      }`}
-                    >
-                      Forward
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPlanLegMode("reverse")}
-                      className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
-                        planLegMode === "reverse"
-                          ? "border-blue-200 bg-blue-50 text-blue-700"
-                          : "border-slate-200 bg-white text-slate-700"
-                      }`}
-                    >
-                      Reverse
-                    </button>
-                  </div>
-                </div>
-
-                {/* Group filter */}
-                <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2">
-                  <div className="mr-1 text-[11px] font-extrabold text-slate-600">
-                    Group
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setPlanGroupFilter("ALL")}
-                      className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
-                        planGroupFilter === "ALL"
-                          ? "border-blue-200 bg-blue-50 text-blue-700"
-                          : "border-slate-200 bg-white text-slate-700"
-                      }`}
-                    >
-                      All
-                    </button>
-
-                    {availableGroups.map((g) => (
-                      <button
-                        key={g}
-                        type="button"
-                        onClick={() => setPlanGroupFilter(g)}
-                        className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
-                          planGroupFilter === g
-                            ? "border-blue-200 bg-blue-50 text-blue-700"
-                            : "border-slate-200 bg-white text-slate-700"
-                        }`}
-                      >
-                        {g}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Date filter */}
-                <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2">
-                  <div className="mr-1 text-[11px] font-extrabold text-slate-600">
-                    Date
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setDeliveryDateFilter(yesterdayWIB())}
-                    className={`rounded-xl border px-3 py-2 text-xs font-bold transition-colors ${
-                      deliveryDateFilter === yesterdayWIB()
-                        ? "border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
-                        : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                    }`}
-                  >
-                    Kemarin
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setDeliveryDateFilter(todayWIB())}
-                    className={`rounded-xl border px-3 py-2 text-xs font-bold transition-colors ${
-                      deliveryDateFilter === todayWIB()
-                        ? "border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
-                        : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                    }`}
-                  >
-                    Hari ini
-                  </button>
-
-                  <input
-                    type="date"
-                    value={deliveryDateFilter}
-                    onChange={(e) => setDeliveryDateFilter(e.target.value)}
-                    className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 outline-none"
-                  />
-                </div>
-              </div>
             </div>
 
             <div className="mt-4">
@@ -1373,101 +1502,6 @@ export default function DashboardPage() {
                 mode={planLegMode}
                 rows={planVsActualRows}
                 getGroup={getGroupByDest}
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* ✅ Grafik baru: Overall Delivery Complete (Plan line, Actual bar) */}
-        <div className="grid grid-cols-1 gap-4">
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-              <div>
-                <div className="text-sm font-extrabold text-slate-900">
-                  Overall Delivery (Complete)
-                </div>
-                <div className="text-xs font-medium text-slate-600">
-                  <span className="font-semibold text-slate-900">
-                    {fmtDeliveryDate(deliveryDateFilter)}
-                  </span>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-3">
-                {/* Group filter */}
-                <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2">
-                  <div className="mr-1 text-[11px] font-extrabold text-slate-600">Group</div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setPlanGroupFilter("ALL")}
-                      className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
-                        planGroupFilter === "ALL"
-                          ? "border-blue-200 bg-blue-50 text-blue-700"
-                          : "border-slate-200 bg-white text-slate-700"
-                      }`}
-                    >
-                      All
-                    </button>
-
-                    {availableGroups.map((g) => (
-                      <button
-                        key={g}
-                        type="button"
-                        onClick={() => setPlanGroupFilter(g)}
-                        className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
-                          planGroupFilter === g
-                            ? "border-blue-200 bg-blue-50 text-blue-700"
-                            : "border-slate-200 bg-white text-slate-700"
-                        }`}
-                      >
-                        {g}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Date filter */}
-                <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2">
-                  <div className="mr-1 text-[11px] font-extrabold text-slate-600">Date</div>
-                  <button
-                    type="button"
-                    onClick={() => setDeliveryDateFilter(yesterdayWIB())}
-                    className={`rounded-xl border px-3 py-2 text-xs font-bold transition-colors ${
-                      deliveryDateFilter === yesterdayWIB()
-                        ? "border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
-                        : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                    }`}
-                  >
-                    Kemarin
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setDeliveryDateFilter(todayWIB())}
-                    className={`rounded-xl border px-3 py-2 text-xs font-bold transition-colors ${
-                      deliveryDateFilter === todayWIB()
-                        ? "border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
-                        : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                    }`}
-                  >
-                    Hari ini
-                  </button>
-
-                  <input
-                    type="date"
-                    value={deliveryDateFilter}
-                    onChange={(e) => setDeliveryDateFilter(e.target.value)}
-                    className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 outline-none"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-4">
-              <PlanLineActualBarChart
-                badgeLabel="Plan vs Actual (Complete)"
-                rows={overallCompleteRows}
               />
             </div>
           </div>
@@ -1576,89 +1610,23 @@ export default function DashboardPage() {
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div>
-              <div className="text-sm font-extrabold text-slate-900">History (Complete)</div>
+              <div className="text-sm font-extrabold text-slate-900">
+                History (Complete)
+              </div>
               <div className="text-xs font-medium text-slate-600">
-                trip selesai untuk tanggal delivery{" "}
+                {/* trip selesai untuk tanggal delivery{" "} */}
                 <span className="font-semibold text-slate-900">
                   {fmtDeliveryDate(deliveryDateFilter)}
                 </span>{" "}
-                (WIB)
+                {/* (WIB) */}
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-3">
-              {/* Group filter */}
-              <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2">
-                <div className="mr-1 text-[11px] font-extrabold text-slate-600">Group</div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setPlanGroupFilter("ALL")}
-                    className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
-                      planGroupFilter === "ALL"
-                        ? "border-blue-200 bg-blue-50 text-blue-700"
-                        : "border-slate-200 bg-white text-slate-700"
-                    }`}
-                  >
-                    All
-                  </button>
-
-                  {availableGroups.map((g) => (
-                    <button
-                      key={g}
-                      type="button"
-                      onClick={() => setPlanGroupFilter(g)}
-                      className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
-                        planGroupFilter === g
-                          ? "border-blue-200 bg-blue-50 text-blue-700"
-                          : "border-slate-200 bg-white text-slate-700"
-                      }`}
-                    >
-                      {g}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Date filter */}
-              <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2">
-                <div className="mr-1 text-[11px] font-extrabold text-slate-600">Date</div>
-                <button
-                  type="button"
-                  onClick={() => setDeliveryDateFilter(yesterdayWIB())}
-                  className={`rounded-xl border px-3 py-2 text-xs font-bold transition-colors ${
-                    deliveryDateFilter === yesterdayWIB()
-                      ? "border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
-                      : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                  }`}
-                >
-                  Kemarin
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setDeliveryDateFilter(todayWIB())}
-                  className={`rounded-xl border px-3 py-2 text-xs font-bold transition-colors ${
-                    deliveryDateFilter === todayWIB()
-                      ? "border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
-                      : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                  }`}
-                >
-                  Hari ini
-                </button>
-
-                <input
-                  type="date"
-                  value={deliveryDateFilter}
-                  onChange={(e) => setDeliveryDateFilter(e.target.value)}
-                  className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 outline-none"
-                />
-              </div>
-
-              <div className="text-xs font-semibold text-slate-600">
-                Total:{" "}
-                <span className="text-slate-900">{filteredHistoryRows.length}</span>
-              </div>
+            <div className="text-xs font-semibold text-slate-600">
+              Total:{" "}
+              <span className="text-slate-900">
+                {filteredHistoryRows.length}
+              </span>
             </div>
           </div>
 

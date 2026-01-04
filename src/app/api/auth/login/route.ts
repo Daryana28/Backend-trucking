@@ -6,7 +6,6 @@ import prisma from "@/lib/prisma";
 import { signToken } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
-// ✅ Pastikan bcrypt jalan di Node runtime
 export const runtime = "nodejs";
 
 const corsHeaders = {
@@ -25,46 +24,53 @@ export async function POST(req: Request) {
     const nameRaw = body?.name;
     const passwordRaw = body?.password;
 
-    const name = typeof nameRaw === "string" ? nameRaw.trim() : "";
+    const input = typeof nameRaw === "string" ? nameRaw.trim() : "";
     const password = typeof passwordRaw === "string" ? passwordRaw : "";
 
-    if (!name || !password) {
+    if (!input || !password) {
       return NextResponse.json(
-        { success: false, message: "Nama & password wajib diisi" },
+        { success: false, message: "Nama/Phone & password wajib diisi" },
         { status: 400, headers: corsHeaders }
       );
     }
 
-    // ✅ cari driver berdasarkan nama (lebih aman untuk beda kapital/spasi)
-    const driver = await prisma.driver.findFirst({
-      where: {
-        name: {
-          equals: name,
-          mode: "insensitive",
-        },
-      },
+    const phoneCandidate = input.replace(/\s+/g, "");
+
+    // ✅ 1) coba cari berdasarkan PHONE dulu (unique, paling aman)
+    let driver = await prisma.driver.findUnique({
+      where: { phone: phoneCandidate },
     });
+
+    // ✅ 2) fallback: cari berdasarkan NAME (insensitive)
+    if (!driver) {
+      driver = await prisma.driver.findFirst({
+        where: {
+          name: {
+            equals: input,
+            mode: "insensitive",
+          },
+        },
+      });
+    }
 
     if (!driver) {
       return NextResponse.json(
-        { success: false, message: "Nama tidak ditemukan" },
+        { success: false, message: "Akun tidak ditemukan" },
         { status: 404, headers: corsHeaders }
       );
     }
 
-    // ✅ Guard: di DB lokal kadang password belum keisi / beda seed
     if (!driver.password || typeof driver.password !== "string") {
       return NextResponse.json(
         {
           success: false,
           message:
-            "Password driver belum terset di database. Pastikan data lokal sudah di-seed & password tersimpan hash bcrypt.",
+            "Password driver belum terset di database. Pastikan password tersimpan hash bcrypt.",
         },
         { status: 500, headers: corsHeaders }
       );
     }
 
-    // cek password
     const match = await bcrypt.compare(password, driver.password);
     if (!match) {
       return NextResponse.json(
@@ -73,14 +79,16 @@ export async function POST(req: Request) {
       );
     }
 
-    // buat token JWT
     const token = signToken(driver.id);
+
+    // ✅ jangan kirim password hash ke mobile
+    const { password: _pw, ...safeDriver } = driver as any;
 
     return NextResponse.json(
       {
         success: true,
         token,
-        driver,
+        driver: safeDriver,
       },
       { status: 200, headers: corsHeaders }
     );

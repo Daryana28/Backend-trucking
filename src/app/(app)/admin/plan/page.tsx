@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 
 type PlanRow = {
   destination: string;
-  group: "YIMM" | "SIM";
+  group: string; // ✅ DINAMIS: ngikutin excel
   etd: string;
   eta: string;
 };
@@ -71,14 +71,15 @@ export default function AdminPlanPage() {
 
   const [lastRefreshed, setLastRefreshed] = useState<string | null>(null);
 
-  const countYimm = useMemo(
-    () => plans.filter((p) => p.group === "YIMM").length,
-    [plans]
-  );
-  const countSim = useMemo(
-    () => plans.filter((p) => p.group === "SIM").length,
-    [plans]
-  );
+  // ✅ otomatis: group counts dari data
+  const groupCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const p of plans) {
+      const g = String(p.group ?? "").trim() || "OTHER";
+      m.set(g, (m.get(g) ?? 0) + 1);
+    }
+    return Array.from(m.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [plans]);
 
   const fetchPlan = async () => {
     try {
@@ -110,7 +111,6 @@ export default function AdminPlanPage() {
   }, []);
 
   const onClickDownloadTemplate = () => {
-    // Simple: buka url template -> browser download
     window.open("/api/plan/template", "_blank");
   };
 
@@ -161,10 +161,8 @@ export default function AdminPlanPage() {
       }
 
       setUploadOkMsg(`Upload berhasil: ${json.count} row di-update.`);
-      // refresh daftar plan setelah upload
       await fetchPlan();
 
-      // reset input supaya bisa upload file yang sama lagi
       if (input) input.value = "";
     } catch {
       setUploadErrs(["Upload gagal (cek server/API)."]);
@@ -182,20 +180,23 @@ export default function AdminPlanPage() {
             <div className="text-xl font-extrabold tracking-tight text-slate-900">
               Plan Delivery
             </div>
-            <div className="text-sm font-medium text-slate-600">
-              {/* Kelola Plan destinasi (destination, group, ETD, ETA) via Excel. */}
-            </div>
+            <div className="text-sm font-medium text-slate-600"></div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {lastRefreshed ? (
               <Badge tone="slate">Last refresh: {lastRefreshed}</Badge>
             ) : (
               <Badge tone="slate">Last refresh: -</Badge>
             )}
             <Badge>{plans.length} plan</Badge>
-            <Badge tone="blue">YIMM: {countYimm}</Badge>
-            <Badge tone="blue">SIM: {countSim}</Badge>
+
+            {/* ✅ otomatis: badge group ikut excel */}
+            {groupCounts.map(([g, c]) => (
+              <Badge key={g} tone="blue">
+                {g}: {c}
+              </Badge>
+            ))}
           </div>
         </div>
 
@@ -206,14 +207,7 @@ export default function AdminPlanPage() {
               <div className="text-sm font-extrabold text-slate-900">
                 Upload Plan (Excel)
               </div>
-              <div className="text-xs font-medium text-slate-600">
-                Format sheet: <span className="font-semibold">PLAN</span> dengan
-                kolom:{" "}
-                <span className="font-semibold">
-                  destination, group, etd, eta
-                </span>
-                .
-              </div>
+              <div className="text-xs font-medium text-slate-600"></div>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
@@ -269,7 +263,6 @@ export default function AdminPlanPage() {
             </div>
           </div>
 
-          {/* Upload errors */}
           {uploadErrs.length > 0 && (
             <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 p-4">
               <div className="text-sm font-extrabold text-red-800">
@@ -294,9 +287,7 @@ export default function AdminPlanPage() {
               <div className="text-sm font-extrabold text-slate-900">
                 Daftar Plan Aktif
               </div>
-              <div className="text-xs font-medium text-slate-600">
-                {/* Ini plan yang dipakai dashboard (jika DB ada isi). */}
-              </div>
+              <div className="text-xs font-medium text-slate-600"></div>
             </div>
 
             {loading ? <Badge tone="slate">Loading...</Badge> : null}
@@ -320,9 +311,7 @@ export default function AdminPlanPage() {
                       {p.destination}
                     </td>
                     <td className="py-3 px-4">
-                      <Badge tone={p.group === "YIMM" ? "blue" : "slate"}>
-                        {p.group}
-                      </Badge>
+                      <Badge tone="slate">{String(p.group ?? "-")}</Badge>
                     </td>
                   </tr>
                 ))}
@@ -338,10 +327,7 @@ export default function AdminPlanPage() {
             </table>
           </div>
 
-          <div className="mt-3 text-xs font-medium text-slate-500">
-            {/* Tips: setelah upload, dashboard otomatis pakai plan dari DB
-            (fallback ke hardcode kalau DB kosong). */}
-          </div>
+          <div className="mt-3 text-xs font-medium text-slate-500"></div>
         </div>
       </div>
     </div>
