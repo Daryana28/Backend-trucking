@@ -42,9 +42,9 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="fixed inset-0 w-screen h-screen overflow-hidden bg-slate-50">
+    <div className="fixed inset-0 w-screen overflow-hidden bg-slate-50">
       {/* 70/30: TEKS (70) kiri - LOGIN (30) kanan */}
-      <div className="h-full w-full md:grid md:grid-cols-[7fr_3fr]">
+      <div className="w-full md:grid md:grid-cols-[7fr_3fr] min-h-[100svh]">
         {/* ================= LEFT: HERO / TEKS (70%) ================= */}
         <div className="relative hidden md:block">
           <img
@@ -121,7 +121,7 @@ export default function LoginPage() {
         </div>
 
         {/* ================= RIGHT: LOGIN (30%) ================= */}
-        <div className="relative flex h-full items-center justify-center px-5">
+        <div className="relative flex items-center justify-center px-5 min-h-[100svh]">
           {/* background for mobile (since left hidden) */}
           <div className="absolute inset-0 md:hidden">
             <img
@@ -133,17 +133,12 @@ export default function LoginPage() {
           </div>
 
           <div className="relative w-full max-w-md md:max-w-sm">
-            <div className="mb-6 flex items-center justify-center md:hidden">
-              <div className="rounded-full bg-white/90 p-3 shadow-lg">
-                {/* <img
-                  src="/koito.png"
-                  alt="Logo"
-                  className="h-12 w-12 object-contain"
-                /> */}
-              </div>
-            </div>
+            {/* ✅ HAPUS TITIK PUTIH: dulu ini bikin bulatan putih karena logonya dikomentarin */}
+            {/* <div className="mb-6 flex items-center justify-center md:hidden">
+              <div className="rounded-full bg-white/90 p-3 shadow-lg"></div>
+            </div> */}
 
-            <div className="rounded-3xl border border-slate-200 bg-white/95 p-8 shadow-[0_18px_45px_rgba(15,23,42,0.12)] md:bg-white">
+            <div className="rounded-3xl border border-slate-200 bg-white/95 shadow-[0_18px_45px_rgba(15,23,42,0.12)] md:bg-white p-6 md:p-8">
               {/* logo (desktop) */}
               <div className="mb-6 hidden items-center justify-center md:flex">
                 {/* <img
@@ -163,7 +158,7 @@ export default function LoginPage() {
               </div>
 
               {error && (
-                <div className="mt-6 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
+                <div className="mt-5 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
                   <div className="flex items-center gap-2">
                     <svg
                       className="h-5 w-5"
@@ -181,7 +176,7 @@ export default function LoginPage() {
                 </div>
               )}
 
-              <div className="mt-7 space-y-4">
+              <div className="mt-6 space-y-4">
                 {/* USERNAME */}
                 <div>
                   <label className="mb-2 block text-xs font-bold text-slate-600">
@@ -263,7 +258,7 @@ export default function LoginPage() {
                 </div>
               </div>
 
-              <div className="mt-7 border-t border-slate-200 pt-4 text-center text-[11px] font-semibold text-slate-400">
+              <div className="mt-6 border-t border-slate-200 pt-4 text-center text-[11px] font-semibold text-slate-400">
                 Secure access • Delivery Monitoring System
               </div>
             </div>
