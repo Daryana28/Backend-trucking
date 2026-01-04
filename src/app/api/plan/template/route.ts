@@ -6,7 +6,8 @@ export const runtime = "nodejs";
 export async function GET() {
   const buf = buildPlanTemplateXlsxBuffer();
 
-  return new NextResponse(buf, {
+  // ✅ Buffer -> Uint8Array biar NextResponse nerima
+  return new NextResponse(new Uint8Array(buf), {
     status: 200,
     headers: {
       "Content-Type":
