@@ -10,20 +10,28 @@ import {
   TileLayer,
   Tooltip,
 } from "react-leaflet";
-
 import L from "leaflet";
 
 type DriverStatus = {
   id: string;
   driverId: string;
+
   plate: string | null;
-  destination: string | null;
+
+  direction?: "forward" | "reverse" | null;
+  origin?: string | null;
+  destination?: string | null;
+
   etdTime?: string | null;
   etaTime?: string | null;
+
   lat: number | null;
   lng: number | null;
   heading: number | null;
+
   updatedAt: string;
+  isFinished?: boolean | null;
+
   driver: {
     name: string;
     phone?: string | null;
@@ -37,22 +45,24 @@ type RealtimeMapProps = {
   sidebarOpen?: boolean;
 };
 
-type DestGroup = "ALL" | "YIMM" | "SIM";
-
-function getDestGroup(
-  dest?: string | null
-): Exclude<DestGroup, "ALL"> | "OTHER" {
-  const s = (dest ?? "").trim().toUpperCase();
-  if (s.startsWith("YIMM")) return "YIMM";
-  if (s.startsWith("SIM")) return "SIM";
-  return "OTHER";
-}
+type PlanRow = {
+  destination: string;
+  group: string;
+};
 
 const MapContainerAny = MapContainer as unknown as any;
 const TileLayerAny = TileLayer as unknown as any;
 const MarkerAny = Marker as unknown as any;
 const TooltipAny = Tooltip as unknown as any;
 const PolylineAny = Polyline as unknown as any;
+
+// fallback group by prefix kalau plan belum ke-load
+function fallbackGroupFromDest(dest?: string | null) {
+  const s = (dest ?? "").trim().toUpperCase();
+  if (s.startsWith("YIMM")) return "YIMM";
+  if (s.startsWith("SIM")) return "SIM";
+  return "OTHER";
+}
 
 export default function RealtimeMap({ sidebarOpen }: RealtimeMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -61,10 +71,13 @@ export default function RealtimeMap({ sidebarOpen }: RealtimeMapProps) {
   const [drivers, setDrivers] = useState<DriverStatus[]>([]);
   const [paths, setPaths] = useState<PathsByDriver>({});
 
-  // ✅ polyline hasil OSRM (ngikut jalan)
   const [snappedPaths, setSnappedPaths] = useState<PathsByDriver>({});
 
-  const [destFilter, setDestFilter] = useState<DestGroup>("ALL");
+  // ✅ plan group map (dest -> group) untuk filter dinamis
+  const [planGroups, setPlanGroups] = useState<Record<string, string>>({});
+
+  // ✅ filter group dinamis (ALL + list group)
+  const [destFilter, setDestFilter] = useState<string>("ALL");
 
   const truckIcon = useMemo(() => {
     return (L as any).icon({
@@ -74,6 +87,63 @@ export default function RealtimeMap({ sidebarOpen }: RealtimeMapProps) {
       popupAnchor: [0, -20],
     });
   }, []);
+
+  // ✅ fetch plan list untuk mapping group (AHM/YIMM/SIM/...)
+  useEffect(() => {
+    let cancelled = false;
+
+    const fetchPlan = async () => {
+      try {
+        const res = await fetch("/api/plan/list", { cache: "no-store" });
+        if (!res.ok) return;
+        const json = await res.json();
+        const rows: PlanRow[] = Array.isArray(json?.plans) ? json.plans : [];
+        if (!rows.length) return;
+
+        const map: Record<string, string> = {};
+        for (const r of rows) {
+          if (!r?.destination) continue;
+          map[r.destination] = String(r.group ?? "").trim();
+        }
+
+        if (!cancelled) setPlanGroups(map);
+      } catch {}
+    };
+
+    fetchPlan();
+    const id = window.setInterval(fetchPlan, 120000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
+
+  const getGroup = (d: DriverStatus) => {
+    // group berdasarkan destinasi forward (lebih konsisten)
+    const dest =
+      (d.direction ?? "forward") === "reverse"
+        ? (d.origin ?? "").trim()
+        : (d.destination ?? "").trim();
+
+    const g = (planGroups[dest] ?? "").trim();
+    return g || fallbackGroupFromDest(dest);
+  };
+
+  // ✅ list group dinamis untuk dropdown
+  const availableGroups = useMemo(() => {
+    const s = new Set<string>();
+    Object.values(planGroups).forEach((g) => {
+      const x = String(g ?? "").trim();
+      if (x) s.add(x);
+    });
+    // tambah fallback umum biar tetap bisa pilih walau plan kosong
+    if (s.size === 0) {
+      s.add("YIMM");
+      s.add("SIM");
+      s.add("OTHER");
+    }
+    return Array.from(s).sort((a, b) => a.localeCompare(b));
+  }, [planGroups]);
 
   useEffect(() => {
     let cancelled = false;
@@ -85,16 +155,17 @@ export default function RealtimeMap({ sidebarOpen }: RealtimeMapProps) {
         const data: DriverStatus[] = await res.json();
 
         if (!cancelled) {
-          setDrivers(data);
+          setDrivers(Array.isArray(data) ? data : []);
 
           setPaths((prev) => {
             const next: PathsByDriver = { ...prev };
 
-            data.forEach((d) => {
+            (Array.isArray(data) ? data : []).forEach((d) => {
               if (d.lat == null || d.lng == null) return;
 
               const key = d.driverId;
 
+              // kalau belum mulai / reset, kosongkan path
               if (!d.etdTime) {
                 next[key] = [];
                 return;
@@ -126,11 +197,18 @@ export default function RealtimeMap({ sidebarOpen }: RealtimeMapProps) {
     };
   }, []);
 
+  // ✅ visible drivers: hide complete + apply group filter
   const visibleDrivers = useMemo(() => {
-    const base = drivers.filter((d) => d.lat != null && d.lng != null);
+    const base = drivers.filter((d) => {
+      if (d.lat == null || d.lng == null) return false;
+      if (d.isFinished === true) return false; // ✅ COMPLETE => hide
+      return true;
+    });
+
     if (destFilter === "ALL") return base;
-    return base.filter((d) => getDestGroup(d.destination) === destFilter);
-  }, [drivers, destFilter]);
+
+    return base.filter((d) => getGroup(d) === destFilter);
+  }, [drivers, destFilter, planGroups]);
 
   const defaultCenter =
     visibleDrivers.length > 0 &&
@@ -211,9 +289,7 @@ export default function RealtimeMap({ sidebarOpen }: RealtimeMapProps) {
     map.zoomOut();
   };
 
-  // ✅ Lebih akurat:
-  // - Snapping pakai HISTORY dari DB (bukan hanya paths client)
-  // - Trigger snapping jika updatedAt terbaru driver berubah
+  // ✅ snapping dari DB history (tetap)
   const lastSnappedUpdatedAtRef = useRef<Record<string, string>>({});
   const inFlightRef = useRef<Record<string, boolean>>({});
 
@@ -225,7 +301,6 @@ export default function RealtimeMap({ sidebarOpen }: RealtimeMapProps) {
       inFlightRef.current[driverId] = true;
 
       try {
-        // ambil history titik dari DB (lebih konsisten)
         const hRes = await fetch(
           `/api/driver-status/history?driverId=${encodeURIComponent(
             driverId
@@ -239,7 +314,6 @@ export default function RealtimeMap({ sidebarOpen }: RealtimeMapProps) {
 
         if (pointsFromDb.length < 2) return;
 
-        // kirim ke OSRM match (pakai timestamp kalau ada)
         const mRes = await fetch("/api/osrm/match", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -269,7 +343,6 @@ export default function RealtimeMap({ sidebarOpen }: RealtimeMapProps) {
     drivers.forEach((d) => {
       const driverId = d.driverId;
 
-      // kalau belum mulai / reset, kosongkan snapped juga
       if (!d.etdTime) {
         setSnappedPaths((prev) => {
           if (!prev[driverId]?.length) return prev;
@@ -281,10 +354,8 @@ export default function RealtimeMap({ sidebarOpen }: RealtimeMapProps) {
         return;
       }
 
-      // hanya proses yang punya lokasi
       if (d.lat == null || d.lng == null) return;
 
-      // trigger kalau updatedAt berubah
       const last = lastSnappedUpdatedAtRef.current[driverId];
       if (last === d.updatedAt) return;
 
@@ -322,13 +393,19 @@ export default function RealtimeMap({ sidebarOpen }: RealtimeMapProps) {
 
           const pos: LatLng = { lat: d.lat, lng: d.lng };
 
-          // ✅ pakai snappedPaths dulu kalau ada, fallback ke raw paths
           const snapped = snappedPaths[d.driverId] ?? [];
           const raw = paths[d.driverId] ?? [];
           const pathToDraw = snapped.length >= 2 ? snapped : raw;
 
           const plate = (d.plate ?? "-").trim() || "-";
-          const dest = (d.destination ?? "-").trim() || "-";
+
+          // label destinasi lebih jelas: forward gunakan destination, reverse gunakan origin
+          const labelDest =
+            (d.direction ?? "forward") === "reverse"
+              ? d.origin ?? "PT Indonesia Koito"
+              : d.destination ?? "-";
+
+          const dest = (labelDest ?? "-").toString().trim() || "-";
           const etd = (d.etdTime ?? "-").trim() || "-";
           const eta = (d.etaTime ?? "-").trim() || "-";
 
@@ -353,7 +430,6 @@ export default function RealtimeMap({ sidebarOpen }: RealtimeMapProps) {
                   opacity={1}
                   className="!bg-white !text-slate-800 !border-slate-200 !rounded-xl !shadow-md"
                 >
-                  {/* Hilangkan “dash/arrow” */}
                   <style jsx global>{`
                     .leaflet-tooltip:before {
                       display: none !important;
@@ -380,7 +456,7 @@ export default function RealtimeMap({ sidebarOpen }: RealtimeMapProps) {
         })}
       </MapContainerAny>
 
-      {/* FILTER CONTROL */}
+      {/* FILTER CONTROL (dinamis) */}
       <div
         className="absolute top-5 left-5"
         style={{ zIndex: 99999, pointerEvents: "auto" }}
@@ -390,12 +466,15 @@ export default function RealtimeMap({ sidebarOpen }: RealtimeMapProps) {
             <span className="text-xs font-semibold text-slate-600">Filter</span>
             <select
               value={destFilter}
-              onChange={(e) => setDestFilter(e.target.value as DestGroup)}
+              onChange={(e) => setDestFilter(e.target.value)}
               className="text-xs font-semibold text-slate-900 outline-none bg-transparent"
             >
               <option value="ALL">All</option>
-              <option value="YIMM">YIMM</option>
-              <option value="SIM">SIM</option>
+              {availableGroups.map((g) => (
+                <option key={g} value={g}>
+                  {g}
+                </option>
+              ))}
             </select>
 
             <span className="ml-2 inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700">

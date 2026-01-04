@@ -89,3 +89,21 @@ model Admin {
   createdAt DateTime @default(now())
 }
 
+model PlanDaily {
+  id          Int      @id @default(autoincrement())
+  deliveryDate String   // format: YYYY-MM-DD
+  destination  String
+  group        String?
+
+  forwardEtd   String?
+  forwardEta   String?
+  reverseEtd   String?
+  reverseEta   String?
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([deliveryDate, destination], name: "uniq_plan_daily_date_destination")
+  @@index([deliveryDate])
+  @@index([destination])
+}

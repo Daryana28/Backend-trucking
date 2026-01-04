@@ -7,16 +7,24 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 type DriverStatus = {
   id: string;
   driverId: string;
-  plate: string | null;
-  destination: string | null;
-  etdTime?: string | null;
-  etaTime?: string | null;
+
+  // lokasi
   lat: number | null;
   lng: number | null;
   heading: number | null;
+
+  // status trip
+  direction?: "forward" | "reverse" | null;
+  origin?: string | null;
+  destination?: string | null;
+  plate: string | null;
+  etdTime?: string | null;
+  etaTime?: string | null;
+  isFinished?: boolean | null;
+
   updatedAt: string;
 
-  // ✅ NEW: dari mobile (YYYY-MM-DD)
+  // ✅ NEW: dari mobile / server (YYYY-MM-DD)
   deliveryDate?: string | null;
 
   driver: { name: string; phone?: string | null };
@@ -40,7 +48,6 @@ type HistoryRow = {
   driverPhone: string | null;
   plate: string | null;
 
-  // ✅ NEW: dari API report (YYYY-MM-DD)
   deliveryDate?: string | null;
 
   originForward: string | null;
@@ -71,7 +78,6 @@ function fmtLastUpdate(iso?: string | null) {
   });
 }
 
-// ✅ Tanggal saja (WIB) dari ISO
 function fmtDateWIB(iso?: string | null) {
   if (!iso) return "-";
   const d = new Date(iso);
@@ -84,12 +90,11 @@ function fmtDateWIB(iso?: string | null) {
   });
 }
 
-// ✅ Tanggal dari deliveryDate "YYYY-MM-DD" (format Indonesia)
 function fmtDeliveryDate(deliveryDate?: string | null) {
   if (!deliveryDate) return "-";
   const s = String(deliveryDate).trim();
   const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) return s; // fallback: tampilkan apa adanya kalau format beda
+  if (!m) return s;
   const d = new Date(`${s}T00:00:00+07:00`);
   if (Number.isNaN(d.getTime())) return s;
   return d.toLocaleDateString("id-ID", {
@@ -112,7 +117,6 @@ function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
-// ✅ ambil tanggal hari ini versi WIB dalam format YYYY-MM-DD
 function todayWIB() {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Jakarta",
@@ -127,7 +131,6 @@ function todayWIB() {
   return `${y}-${m}-${d}`;
 }
 
-// ✅ kemarin (WIB) format YYYY-MM-DD
 function yesterdayWIB() {
   const now = new Date();
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -141,7 +144,6 @@ function yesterdayWIB() {
   const m = Number(parts.find((p) => p.type === "month")?.value ?? "01");
   const d = Number(parts.find((p) => p.type === "day")?.value ?? "01");
 
-  // buat tanggal WIB "hari ini" lalu -1 hari secara aman
   const dt = new Date(Date.UTC(y, m - 1, d));
   dt.setUTCDate(dt.getUTCDate() - 1);
 
@@ -152,11 +154,11 @@ function yesterdayWIB() {
 }
 
 // ================================
-// ✅ PLAN MASTER (Forward)
+// ✅ PLAN MASTER (fallback kalau DB kosong)
 // ================================
 const PLAN_BY_DEST: Record<
   string,
-  { etd: string; eta: string; group: "YIMM" | "SIM" }
+  { etd: string; eta: string; group: string }
 > = {
   "YIMM PG LOKAL PO 1": { etd: "05:00", eta: "08:00", group: "YIMM" },
   "YIMM PG LOKAL PO 2": { etd: "08:00", eta: "13:00", group: "YIMM" },
@@ -174,10 +176,46 @@ const PLAN_BY_DEST: Record<
   "SIM TAMBUN/VUTEQ": { etd: "10:00", eta: "15:00", group: "SIM" },
 };
 
-function parseHHmmToMin(hhmm?: string | null) {
-  if (!hhmm) return null;
-  const s = hhmm.trim();
-  const m = s.match(/^(\d{1,2}):(\d{2})$/);
+// ✅ sesuai response /api/plan/list
+type PlanFromDbRow = {
+  destination: string;
+  group: string;
+  forwardEtd: string | null;
+  forwardEta: string | null;
+  reverseEtd: string | null;
+  reverseEta: string | null;
+};
+
+type PlanMap = Record<
+  string,
+  {
+    group: string;
+    forward: { etd: string; eta: string };
+    reverse: { etd: string; eta: string };
+  }
+>;
+
+// ================================
+// ✅ FIX: normalize & parse time
+// ================================
+function normalizeTimeHHmm(input?: string | null) {
+  if (!input) return "-";
+  const s = String(input).trim();
+  if (!s || s === "-" || s.toLowerCase() === "null") return "-";
+
+  const m = s.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!m) return s;
+  const hh = String(Number(m[1])).padStart(2, "0");
+  const mm = String(Number(m[2])).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
+function parseTimeToMin(input?: string | null) {
+  if (!input) return null;
+  const s0 = String(input).trim();
+  if (!s0 || s0 === "-" || s0.toLowerCase() === "null") return null;
+
+  const m = s0.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
   if (!m) return null;
   const hh = Number(m[1]);
   const mm = Number(m[2]);
@@ -186,19 +224,48 @@ function parseHHmmToMin(hhmm?: string | null) {
   return hh * 60 + mm;
 }
 
-// durasi menit dari ETD -> ETA (kalau lewat tengah malam, tetap aman)
 function diffMin(etd?: string | null, eta?: string | null) {
-  const a = parseHHmmToMin(etd);
-  const b = parseHHmmToMin(eta);
+  const a = parseTimeToMin(etd);
+  const b = parseTimeToMin(eta);
   if (a == null || b == null) return null;
   let d = b - a;
   if (d < 0) d += 24 * 60;
   return d;
 }
 
+// ✅ delay minutes: only if actual > plan
+function delayMin(plan?: string | null, actual?: string | null) {
+  const p = parseTimeToMin(plan);
+  const a = parseTimeToMin(actual);
+  if (p == null || a == null) return null;
+  const d = a - p;
+  return d > 0 ? d : 0;
+}
+
 function Badge({ children }: { children: React.ReactNode }) {
   return (
     <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[11px] font-semibold text-blue-700">
+      {children}
+    </span>
+  );
+}
+
+function Pill({
+  children,
+  tone = "blue",
+}: {
+  children: React.ReactNode;
+  tone?: "blue" | "rose";
+}) {
+  const cls =
+    tone === "rose"
+      ? "border-rose-200 bg-rose-50 text-rose-700"
+      : "border-blue-200 bg-blue-50 text-blue-700";
+
+  return (
+    <span
+      className={`inline-flex items-center rounded-full border px-3 py-1 text-[11px] font-extrabold ${cls}`}
+    >
       {children}
     </span>
   );
@@ -222,7 +289,6 @@ function StatCard({
           <div className="mt-2 text-3xl font-extrabold tracking-tight text-slate-900">
             {value}
           </div>
-          {/* <div className="mt-1 text-xs font-medium text-slate-500">{sub}</div> */}
         </div>
 
         <div className="relative flex h-12 w-12 items-center justify-center rounded-2xl border border-blue-200 bg-blue-50 text-blue-700">
@@ -233,7 +299,6 @@ function StatCard({
   );
 }
 
-/** Line chart via SVG */
 function MiniLineChart({
   points,
   height = 240,
@@ -348,10 +413,245 @@ function MiniLineChart({
   );
 }
 
-// ✅ Grafik Plan vs Actual (dual bar)
-function PlanVsActualChart({
+/**
+ * ✅ Overall Delivery Compare (Count):
+ * - Plan = LINE (target delivery count / destinasi)
+ * - Actual = BAR (jumlah delivery COMPLETE)
+ *   (bar hanya muncul kalau completeCount > 0)
+ */
+function PlanLineActualBarChart({
   rows,
+  badgeLabel,
 }: {
+  badgeLabel: string;
+  rows: { label: string; planCount: number; completeCount: number }[];
+}) {
+  // ✅ dibuat lebih tinggi supaya label destinasi kebaca
+  const width = 980;
+  const height = 340;
+
+  const padX = 34;
+  const padTop = 20;
+  const padBottom = 120;
+
+  const innerW = width - padX * 2;
+  const innerH = height - padTop - padBottom;
+
+  // Axis = count
+  const maxPlan = Math.max(1, ...rows.map((r) => r.planCount));
+  const maxCnt = Math.max(1, ...rows.map((r) => r.completeCount));
+  const maxY = Math.max(1, maxPlan, maxCnt);
+
+  const toX = (i: number) =>
+    padX + (rows.length <= 1 ? 0 : (i / (rows.length - 1)) * innerW);
+
+  const toY = (v: number) => padTop + (1 - v / (maxY || 1)) * innerH;
+
+  const lineD = rows
+    .map((r, i) => `${i === 0 ? "M" : "L"} ${toX(i)} ${toY(r.planCount)}`)
+    .join(" ");
+
+  const barW =
+    rows.length <= 1
+      ? 80
+      : Math.max(14, Math.min(90, innerW / rows.length - 16));
+
+  const leftLabel = rows[0]?.label ?? "-";
+  const rightLabel = rows[rows.length - 1]?.label ?? "-";
+
+  // ✅ split label jadi max 2 baris biar kebaca
+  const wrap2 = (label: string) => {
+    const s = String(label ?? "").trim();
+    if (!s) return ["-"];
+
+    // kalau pendek, langsung
+    if (s.length <= 16) return [s];
+
+    // coba pecah di spasi terdekat tengah
+    const parts = s.split(/\s+/).filter(Boolean);
+    if (parts.length <= 1) {
+      return [
+        s.slice(0, 16) + "…",
+        s.slice(16, 32) + (s.length > 32 ? "…" : ""),
+      ];
+    }
+
+    // gabung sampai kira-kira setengah
+    const target = Math.ceil(s.length / 2);
+    let a: string[] = [];
+    let len = 0;
+    for (const p of parts) {
+      const nextLen = len + (a.length ? 1 : 0) + p.length;
+      if (nextLen > target && a.length) break;
+      a.push(p);
+      len = nextLen;
+    }
+    const b = parts.slice(a.length);
+    const l1 = a.join(" ");
+    const l2 = b.join(" ");
+
+    // safety truncate
+    const t1 = l1.length > 20 ? l1.slice(0, 20) + "…" : l1;
+    const t2 = l2.length > 20 ? l2.slice(0, 20) + "…" : l2;
+
+    return t2 ? [t1, t2] : [t1];
+  };
+
+  return (
+    <div className="w-full">
+      <div className="mb-3 flex items-center justify-between">
+        <Badge>{badgeLabel}</Badge>
+        <div className="text-xs font-semibold text-slate-600">
+          {/* Plan = target (garis) • Actual = delivery complete (batang) */}
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-slate-200 bg-gradient-to-b from-white to-slate-50 p-3">
+        {rows.length === 0 ? (
+          <div className="p-3 text-sm font-medium text-slate-500">
+            Belum ada data.
+          </div>
+        ) : (
+          <>
+            <svg
+              viewBox={`0 0 ${width} ${height}`}
+              className="h-[340px] w-full"
+            >
+              {/* grid */}
+              <g>
+                {[0, 1, 2, 3].map((i) => {
+                  const y = padTop + (i / 3) * innerH;
+                  return (
+                    <line
+                      key={i}
+                      x1={padX}
+                      y1={y}
+                      x2={padX + innerW}
+                      y2={y}
+                      stroke="#E5E7EB"
+                      strokeWidth="1"
+                    />
+                  );
+                })}
+              </g>
+
+              {/* bars (actual complete) */}
+              <g>
+                {rows.map((r, i) => {
+                  if (!r.completeCount) return null;
+                  const x = toX(i) - barW / 2;
+                  const y = toY(r.completeCount);
+                  const h = padTop + innerH - y;
+                  return (
+                    <g key={i}>
+                      <rect
+                        x={x}
+                        y={y}
+                        width={barW}
+                        height={Math.max(0, h)}
+                        rx={10}
+                        fill="#16A34A"
+                        opacity={0.85}
+                      />
+                      {/* value label on top of bar */}
+                      <text
+                        x={toX(i)}
+                        y={Math.max(padTop + 12, y - 8)}
+                        textAnchor="middle"
+                        fontSize="12"
+                        fontWeight="800"
+                        fill="#64748B"
+                      >
+                        {r.completeCount}
+                      </text>
+                    </g>
+                  );
+                })}
+              </g>
+
+              {/* plan line (target count) */}
+              <path
+                d={lineD}
+                fill="none"
+                stroke="#2563EB"
+                strokeWidth={3.5}
+                strokeLinecap="round"
+              />
+              {rows.map((r, i) => (
+                <circle
+                  key={i}
+                  cx={toX(i)}
+                  cy={toY(r.planCount)}
+                  r={4.2}
+                  fill="#2563EB"
+                  opacity={0.95}
+                />
+              ))}
+
+              {/* axis labels */}
+              <g fontSize="12" fill="#64748B" fontWeight="800">
+                <text x={padX} y={padTop + 12} textAnchor="start">
+                  {maxY}
+                </text>
+                <text x={padX} y={padTop + innerH + 14} textAnchor="start">
+                  0
+                </text>
+              </g>
+
+              {/* x labels (destination) - ✅ multiline, tidak diputar supaya tidak kepotong */}
+              <g fontSize="11" fill="#475569" fontWeight="800">
+                {rows.map((r, i) => {
+                  const lines = wrap2(r.label);
+                  const x = toX(i);
+                  const y = padTop + innerH + 32;
+                  return (
+                    <text key={i} x={x} y={y} textAnchor="middle">
+                      {lines.map((ln, idx) => (
+                        <tspan key={idx} x={x} dy={idx === 0 ? 0 : 14}>
+                          {ln}
+                        </tspan>
+                      ))}
+                    </text>
+                  );
+                })}
+              </g>
+            </svg>
+
+            {/* <div className="mt-2 flex items-center justify-between text-xs font-semibold text-slate-600">
+              <span className="truncate">{leftLabel}</span>
+              <span className="truncate">{rightLabel}</span>
+            </div> */}
+
+            {/* legend */}
+            <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] font-semibold text-slate-600">
+              <span className="inline-flex items-center gap-2">
+                <span className="inline-block h-2.5 w-7 rounded-full bg-blue-600" />
+                Plan (target delivery)
+              </span>
+              <span className="inline-flex items-center gap-2">
+                <span className="inline-block h-2.5 w-7 rounded-full bg-emerald-600" />
+                Actual (delivery complete)
+              </span>
+            </div>
+
+            {/* helper text */}
+            {/* <div className="mt-1 text-[11px] font-semibold text-slate-500">
+              Garis = destinasi yang punya plan (target 1). Batang muncul otomatis kalau ada delivery yang{" "}
+              <span className="font-extrabold">complete</span>.
+            </div> */}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PlanVsActualChart({
+  mode,
+  rows,
+  getGroup,
+}: {
+  mode: "forward" | "reverse";
   rows: {
     destination: string;
     planEtd: string;
@@ -359,17 +659,23 @@ function PlanVsActualChart({
     planDurMin: number;
     actualAvgMin: number | null;
     actualSample: number;
+
+    // delay (boolean saja untuk display)
+    delayedAny: boolean;
   }[];
+  getGroup: (dest: string) => string;
 }) {
   const maxV = Math.max(
     1,
     ...rows.map((r) => Math.max(r.planDurMin, r.actualAvgMin ?? 0))
   );
 
+  const modeLabel = mode === "forward" ? "Keberangkatan" : "Kepulangan";
+
   return (
     <div className="w-full">
       <div className="mb-3 flex items-center justify-between">
-        <Badge>Plan vs Actual</Badge>
+        <Badge>Plan vs Actual • {modeLabel}</Badge>
         <div className="text-xs font-semibold text-slate-600">
           Durasi (menit)
         </div>
@@ -389,24 +695,33 @@ function PlanVsActualChart({
                 r.actualAvgMin == null ? 0 : clamp((actV / maxV) * 100, 3, 100);
 
               return (
-                <div key={r.destination} className="space-y-2">
+                <div key={`${mode}__${r.destination}`} className="space-y-2">
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
                       <div className="truncate text-sm font-extrabold text-slate-900">
                         {r.destination}
                       </div>
-                      <div className="text-xs font-semibold text-slate-500">
-                        Plan: {r.planEtd} → {r.planEta} ({r.planDurMin}m) •
-                        Actual:{" "}
-                        {r.actualAvgMin == null
-                          ? "-"
-                          : `${Math.round(r.actualAvgMin)}m`}{" "}
-                        {r.actualAvgMin == null ? "" : `(n=${r.actualSample})`}
+
+                      <div className="mt-0.5 text-xs font-semibold text-slate-500">
+                        Plan:{" "}
+                        <span className="text-slate-800">
+                          {r.planEtd} → {r.planEta}
+                        </span>{" "}
+                        ({r.planDurMin}m)
                       </div>
+
+                      {/* ✅ Delay cuma badge "DELAY" */}
+                      {r.delayedAny ? (
+                        <div className="mt-2">
+                          <Pill tone="rose">DELAY</Pill>
+                        </div>
+                      ) : null}
                     </div>
 
-                    <div className="shrink-0 text-xs font-bold text-slate-600">
-                      {PLAN_BY_DEST[r.destination]?.group ?? ""}
+                    <div className="shrink-0">
+                      <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-4 py-2 text-[13px] font-extrabold text-blue-700">
+                        {getGroup(r.destination)}
+                      </span>
                     </div>
                   </div>
 
@@ -452,39 +767,52 @@ function PlanVsActualChart({
             })}
           </div>
         )}
-
-        <div className="mt-4 text-xs font-medium text-slate-500">
-          {/* * Actual dihitung dari ETD→ETA Forward yang dikirim driver (rata-rata
-          per destinasi) untuk tanggal delivery yang dipilih. */}
-        </div>
       </div>
     </div>
   );
+}
+
+// helper From -> To untuk On Progress
+function getFromTo(d: DriverStatus) {
+  const dir = (d.direction ?? "").toLowerCase();
+  const originRaw = (d.origin ?? "").trim();
+  const destRaw = (d.destination ?? "").trim();
+
+  const KOITO = "PT Indonesia Koito";
+
+  if (originRaw && destRaw) return { from: originRaw, to: destRaw };
+
+  if (dir === "reverse") {
+    const from = originRaw || destRaw || "-";
+    return { from, to: KOITO };
+  }
+
+  const to = destRaw || "-";
+  return { from: KOITO, to };
 }
 
 export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  // ✅ filter delivery date untuk Plan vs Actual + History (Complete)
   const [deliveryDateFilter, setDeliveryDateFilter] = useState<string>(
     todayWIB()
   );
 
-  // ✅ filter group destinasi untuk Plan vs Actual
-  const [planGroupFilter, setPlanGroupFilter] = useState<
-    "ALL" | "YIMM" | "SIM"
-  >("ALL");
+  const [planGroupFilter, setPlanGroupFilter] = useState<string>("ALL");
 
-  // realtime (aktif / on progress)
+  // ✅ toggle chart forward/reverse
+  const [planLegMode, setPlanLegMode] = useState<"forward" | "reverse">(
+    "forward"
+  );
+
+  const [planFromDb, setPlanFromDb] = useState<PlanMap | null>(null);
+
   const [latest, setLatest] = useState<DriverStatus[]>([]);
   const [series, setSeries] = useState<{ t: string; active: number }[]>([]);
   const tickRef = useRef<string | null>(null);
 
-  // history complete
   const [historyRows, setHistoryRows] = useState<HistoryRow[]>([]);
-
-  // ops metrics
   const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
 
   const fetchLatest = async () => {
@@ -514,9 +842,7 @@ export default function DashboardPage() {
       const json = await res.json();
       const rows = Array.isArray(json?.data) ? (json.data as HistoryRow[]) : [];
       setHistoryRows(rows);
-    } catch {
-      // silent
-    }
+    } catch {}
   };
 
   const fetchMetrics = async () => {
@@ -525,15 +851,53 @@ export default function DashboardPage() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json: DashboardMetrics = await res.json();
       if (json?.ok) setMetrics(json);
-    } catch {
-      // silent
-    }
+    } catch {}
+  };
+
+  const fetchPlan = async (dayArg?: string) => {
+    try {
+      const day = dayArg ?? deliveryDateFilter ?? todayWIB();
+      const res = await fetch(`/api/plan/list?deliveryDate=${day}`, {
+        cache: "no-store",
+      });
+      if (!res.ok) return;
+
+      const json = await res.json();
+      const plans: PlanFromDbRow[] = Array.isArray(json?.plans)
+        ? json.plans
+        : [];
+
+      if (!plans.length) {
+        setPlanFromDb(null);
+        return;
+      }
+
+      const map: PlanMap = {};
+
+      for (const p of plans) {
+        if (!p?.destination) continue;
+
+        const fEtd = normalizeTimeHHmm(p.forwardEtd);
+        const fEta = normalizeTimeHHmm(p.forwardEta);
+        const rEtd = normalizeTimeHHmm(p.reverseEtd);
+        const rEta = normalizeTimeHHmm(p.reverseEta);
+
+        map[p.destination] = {
+          group: String(p.group ?? "").trim(),
+          forward: { etd: fEtd, eta: fEta },
+          reverse: { etd: rEtd, eta: rEta },
+        };
+      }
+
+      setPlanFromDb(map);
+    } catch {}
   };
 
   useEffect(() => {
     fetchLatest();
     fetchHistory(deliveryDateFilter);
     fetchMetrics();
+    fetchPlan(deliveryDateFilter);
 
     const id1 = window.setInterval(fetchLatest, 5000);
     const idH = window.setInterval(
@@ -541,22 +905,30 @@ export default function DashboardPage() {
       30000
     );
     const id2 = window.setInterval(fetchMetrics, 30000);
+    const idP = window.setInterval(() => fetchPlan(deliveryDateFilter), 120000);
+
     return () => {
       window.clearInterval(id1);
       window.clearInterval(idH);
       window.clearInterval(id2);
+      window.clearInterval(idP);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ✅ refetch history saat filter delivery date berubah
   useEffect(() => {
     fetchHistory(deliveryDateFilter);
+    fetchPlan(deliveryDateFilter);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deliveryDateFilter]);
 
+  // ✅ hanya yang masih progress (belum complete) + ada posisi
   const activeDrivers = useMemo(() => {
-    return latest.filter((d) => d.lat != null && d.lng != null);
+    return latest.filter((d) => {
+      if (d.lat == null || d.lng == null) return false;
+      if (d.isFinished === true) return false; // ✅ COMPLETE => hide
+      return true;
+    });
   }, [latest]);
 
   const activeDriversCount = activeDrivers.length;
@@ -574,7 +946,6 @@ export default function DashboardPage() {
     return max;
   }, [activeDrivers]);
 
-  // realtime series (30 titik)
   useEffect(() => {
     const now = new Date();
     const key = `${now.getHours()}:${now.getMinutes()}:${now.getSeconds()}`;
@@ -595,38 +966,84 @@ export default function DashboardPage() {
     [series]
   );
 
-  // ops charts data
   const updatesByHour = metrics?.updates24h?.byHour ?? [];
 
-  // ✅ PLAN vs ACTUAL per destinasi (Forward) berdasarkan historyRows (yang sudah ter-filter tanggal)
-  // ✅ + tambahan filter group (ALL / YIMM / SIM)
+  // ✅ pilih plan yang dipakai: DB > fallback
+  const effectivePlan: PlanMap = useMemo(() => {
+    if (planFromDb) return planFromDb;
+
+    // fallback: reverse disamakan dengan forward (karena plan master lama hanya 1 set)
+    const map: PlanMap = {};
+    for (const dest of Object.keys(PLAN_BY_DEST)) {
+      map[dest] = {
+        group: PLAN_BY_DEST[dest].group,
+        forward: { etd: PLAN_BY_DEST[dest].etd, eta: PLAN_BY_DEST[dest].eta },
+        reverse: { etd: PLAN_BY_DEST[dest].etd, eta: PLAN_BY_DEST[dest].eta },
+      };
+    }
+    return map;
+  }, [planFromDb]);
+
+  const availableGroups = useMemo(() => {
+    const s = new Set<string>();
+    for (const dest of Object.keys(effectivePlan)) {
+      const g = (effectivePlan[dest]?.group ?? "").trim();
+      if (g) s.add(g);
+    }
+    return Array.from(s).sort((a, b) => a.localeCompare(b));
+  }, [effectivePlan]);
+
+  const getGroupByDest = (dest: string) =>
+    (effectivePlan[dest]?.group ?? "").trim() || "OTHER";
+
+  // ✅ rows untuk Plan vs Actual per LEG (forward/reverse)
   const planVsActualRows = useMemo(() => {
-    const dests = Object.keys(PLAN_BY_DEST).filter((dest) => {
-      const g = PLAN_BY_DEST[dest]?.group;
+    const dests = Object.keys(effectivePlan).filter((dest) => {
+      const g = (effectivePlan[dest]?.group ?? "").trim();
       if (planGroupFilter === "ALL") return true;
       return g === planGroupFilter;
     });
 
     const buckets = new Map<string, number[]>();
-    for (const r of historyRows) {
-      const dest = (r.destinationForward ?? "").trim();
-      if (!dest || !PLAN_BY_DEST[dest]) continue;
+    const delayedDest = new Set<string>();
 
-      // ✅ kalau group filter bukan ALL, skip yang beda group
-      const g = PLAN_BY_DEST[dest]?.group;
+    for (const r of historyRows) {
+      const dest =
+        planLegMode === "forward"
+          ? (r.destinationForward ?? "").trim()
+          : (r.destinationReverse ?? "").trim();
+
+      if (!dest || !effectivePlan[dest]) continue;
+
+      const g = (effectivePlan[dest]?.group ?? "").trim();
       if (planGroupFilter !== "ALL" && g !== planGroupFilter) continue;
 
-      const dur = diffMin(r.etdForward, r.etaForward);
-      if (dur == null) continue;
-      const arr = buckets.get(dest) ?? [];
-      arr.push(dur);
-      buckets.set(dest, arr);
+      // duration actual sesuai leg
+      const etdA = planLegMode === "forward" ? r.etdForward : r.etdReverse;
+      const etaA = planLegMode === "forward" ? r.etaForward : r.etaReverse;
+
+      const dur = diffMin(etdA, etaA);
+      if (dur != null) {
+        const arr = buckets.get(dest) ?? [];
+        arr.push(dur);
+        buckets.set(dest, arr);
+      }
+
+      // delay check vs plan sesuai leg (ETD atau ETA lewat plan)
+      const plan = effectivePlan[dest]?.[planLegMode];
+      const de = delayMin(plan?.etd, etdA);
+      const da = delayMin(plan?.eta, etaA);
+      if ((de != null && de > 0) || (da != null && da > 0)) {
+        delayedDest.add(dest);
+      }
     }
 
     return dests
       .map((dest) => {
-        const plan = PLAN_BY_DEST[dest];
-        const planDur = diffMin(plan.etd, plan.eta) ?? 0;
+        const plan = effectivePlan[dest]?.[planLegMode];
+        const planEtd = normalizeTimeHHmm(plan?.etd ?? "-");
+        const planEta = normalizeTimeHHmm(plan?.eta ?? "-");
+        const planDur = diffMin(planEtd, planEta) ?? 0;
 
         const arr = buckets.get(dest) ?? [];
         const avg =
@@ -634,43 +1051,84 @@ export default function DashboardPage() {
 
         return {
           destination: dest,
-          planEtd: plan.etd,
-          planEta: plan.eta,
+          planEtd,
+          planEta,
           planDurMin: planDur,
           actualAvgMin: avg,
           actualSample: arr.length,
+          delayedAny: delayedDest.has(dest),
         };
       })
       .sort((a, b) => a.destination.localeCompare(b.destination));
-  }, [historyRows, planGroupFilter]);
+  }, [historyRows, planGroupFilter, effectivePlan, planLegMode]);
+
+  // ✅ Overall delivery complete: bandingkan target plan (1/destinasi) vs aktual (jumlah delivery complete)
+  const overallCompleteRows = useMemo(() => {
+    const dests = Object.keys(effectivePlan).filter((dest) => {
+      const g = (effectivePlan[dest]?.group ?? "").trim();
+      if (planGroupFilter === "ALL") return true;
+      return g === planGroupFilter;
+    });
+
+    // complete count per destination (ambil dari history complete)
+    const cntMap = new Map<string, number>();
+
+    for (const r of historyRows) {
+      if (!r.isComplete) continue;
+
+      // destination untuk grouping cukup pakai forward (master destinasi)
+      const dest = (r.destinationForward ?? "").trim();
+      if (!dest || !effectivePlan[dest]) continue;
+
+      const g = (effectivePlan[dest]?.group ?? "").trim();
+      if (planGroupFilter !== "ALL" && g !== planGroupFilter) continue;
+
+      cntMap.set(dest, (cntMap.get(dest) ?? 0) + 1);
+    }
+
+    return dests
+      .map((dest) => ({
+        label: dest,
+        // plan selalu ada untuk destinasi ini => target 1
+        planCount: 1,
+        // actual mengikuti update driver (complete)
+        completeCount: cntMap.get(dest) ?? 0,
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [historyRows, effectivePlan, planGroupFilter]);
+
+  // ✅ History filter: Group (based on destinationForward's plan group)
+  const filteredHistoryRows = useMemo(() => {
+    if (planGroupFilter === "ALL") return historyRows;
+
+    return historyRows.filter((r) => {
+      const dest = (r.destinationForward ?? "").trim();
+      if (!dest) return false;
+      const g = (effectivePlan[dest]?.group ?? "").trim();
+      return g === planGroupFilter;
+    });
+  }, [historyRows, effectivePlan, planGroupFilter]);
 
   return (
     <div className="min-h-[calc(100vh-4rem)] w-full bg-slate-50">
       <div className="w-full px-3 md:px-4 lg:px-6 xl:px-8 py-6 space-y-5">
-        {/* Header */}
         <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
           <div>
             <div className="text-xl font-extrabold tracking-tight text-slate-900">
               Dashboard Operasional
             </div>
-            <div className="text-sm font-medium text-slate-600">{/* li */}</div>
+            <div className="text-sm font-medium text-slate-600"></div>
           </div>
-
-          <div className="flex items-center gap-2">
-            {/* {err ? (
-              <span className="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-3 py-1 text-xs font-semibold text-red-700">
-                {err}
-              </span>
-            ) : (
-              <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
-                Live • realtime 
-              </span>
-            )} */}
-          </div>
+          <div className="flex items-center gap-2"></div>
         </div>
 
-        {/* Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        {err ? (
+          <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
+            {err}
+          </div>
+        ) : null}
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <StatCard
             title="Active Trucks"
             value={loading ? "-" : activeTrucksCount}
@@ -730,32 +1188,14 @@ export default function DashboardPage() {
             }
           />
 
-          <StatCard
-            title="Last Update"
-            value={loading ? "-" : fmtLastUpdate(lastUpdateIso)}
-            icon={
-              <svg
-                viewBox="0 0 24 24"
-                width="22"
-                height="22"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-              >
-                <path d="M12 8v5l3 2" />
-                <path d="M21 12a9 9 0 1 1-9-9 9 9 0 0 1 9 9Z" />
-              </svg>
-            }
-          />
         </div>
 
-        {/* Charts row 1 */}
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="text-sm font-extrabold text-slate-900">
-                  Active Drivers (Realtime)
+                  Active Drivers
                 </div>
                 <div className="text-xs font-medium text-slate-600"></div>
               </div>
@@ -794,10 +1234,7 @@ export default function DashboardPage() {
                 badgeLabel="Updates / Hour"
                 points={
                   updatesByHour.length
-                    ? updatesByHour.map((x) => ({
-                        label: x.label,
-                        value: x.value,
-                      }))
+                    ? updatesByHour
                     : [{ label: "-", value: 0 }]
                 }
                 minMaxRight={
@@ -810,7 +1247,7 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* ✅ Plan vs Actual (dengan filter delivery date + filter destinasi group) */}
+        {/* ✅ Plan vs Actual + Toggle Forward/Reverse */}
         <div className="grid grid-cols-1 gap-4">
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -825,9 +1262,335 @@ export default function DashboardPage() {
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2">
-                {/* ✅ filter group destinasi */}
-                <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-3">
+                {/* Mode: Forward / Reverse */}
+                <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2">
+                  <div className="mr-1 text-[11px] font-extrabold text-slate-600">
+                    Mode
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPlanLegMode("forward")}
+                      className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
+                        planLegMode === "forward"
+                          ? "border-blue-200 bg-blue-50 text-blue-700"
+                          : "border-slate-200 bg-white text-slate-700"
+                      }`}
+                    >
+                      Forward
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPlanLegMode("reverse")}
+                      className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
+                        planLegMode === "reverse"
+                          ? "border-blue-200 bg-blue-50 text-blue-700"
+                          : "border-slate-200 bg-white text-slate-700"
+                      }`}
+                    >
+                      Reverse
+                    </button>
+                  </div>
+                </div>
+
+                {/* Group filter */}
+                <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2">
+                  <div className="mr-1 text-[11px] font-extrabold text-slate-600">
+                    Group
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPlanGroupFilter("ALL")}
+                      className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
+                        planGroupFilter === "ALL"
+                          ? "border-blue-200 bg-blue-50 text-blue-700"
+                          : "border-slate-200 bg-white text-slate-700"
+                      }`}
+                    >
+                      All
+                    </button>
+
+                    {availableGroups.map((g) => (
+                      <button
+                        key={g}
+                        type="button"
+                        onClick={() => setPlanGroupFilter(g)}
+                        className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
+                          planGroupFilter === g
+                            ? "border-blue-200 bg-blue-50 text-blue-700"
+                            : "border-slate-200 bg-white text-slate-700"
+                        }`}
+                      >
+                        {g}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Date filter */}
+                <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2">
+                  <div className="mr-1 text-[11px] font-extrabold text-slate-600">
+                    Date
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setDeliveryDateFilter(yesterdayWIB())}
+                    className={`rounded-xl border px-3 py-2 text-xs font-bold transition-colors ${
+                      deliveryDateFilter === yesterdayWIB()
+                        ? "border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                        : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                    }`}
+                  >
+                    Kemarin
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setDeliveryDateFilter(todayWIB())}
+                    className={`rounded-xl border px-3 py-2 text-xs font-bold transition-colors ${
+                      deliveryDateFilter === todayWIB()
+                        ? "border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                        : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                    }`}
+                  >
+                    Hari ini
+                  </button>
+
+                  <input
+                    type="date"
+                    value={deliveryDateFilter}
+                    onChange={(e) => setDeliveryDateFilter(e.target.value)}
+                    className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 outline-none"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4">
+              <PlanVsActualChart
+                mode={planLegMode}
+                rows={planVsActualRows}
+                getGroup={getGroupByDest}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* ✅ Grafik baru: Overall Delivery Complete (Plan line, Actual bar) */}
+        <div className="grid grid-cols-1 gap-4">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div>
+                <div className="text-sm font-extrabold text-slate-900">
+                  Overall Delivery (Complete)
+                </div>
+                <div className="text-xs font-medium text-slate-600">
+                  <span className="font-semibold text-slate-900">
+                    {fmtDeliveryDate(deliveryDateFilter)}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                {/* Group filter */}
+                <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2">
+                  <div className="mr-1 text-[11px] font-extrabold text-slate-600">Group</div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPlanGroupFilter("ALL")}
+                      className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
+                        planGroupFilter === "ALL"
+                          ? "border-blue-200 bg-blue-50 text-blue-700"
+                          : "border-slate-200 bg-white text-slate-700"
+                      }`}
+                    >
+                      All
+                    </button>
+
+                    {availableGroups.map((g) => (
+                      <button
+                        key={g}
+                        type="button"
+                        onClick={() => setPlanGroupFilter(g)}
+                        className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
+                          planGroupFilter === g
+                            ? "border-blue-200 bg-blue-50 text-blue-700"
+                            : "border-slate-200 bg-white text-slate-700"
+                        }`}
+                      >
+                        {g}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Date filter */}
+                <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2">
+                  <div className="mr-1 text-[11px] font-extrabold text-slate-600">Date</div>
+                  <button
+                    type="button"
+                    onClick={() => setDeliveryDateFilter(yesterdayWIB())}
+                    className={`rounded-xl border px-3 py-2 text-xs font-bold transition-colors ${
+                      deliveryDateFilter === yesterdayWIB()
+                        ? "border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                        : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                    }`}
+                  >
+                    Kemarin
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setDeliveryDateFilter(todayWIB())}
+                    className={`rounded-xl border px-3 py-2 text-xs font-bold transition-colors ${
+                      deliveryDateFilter === todayWIB()
+                        ? "border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                        : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                    }`}
+                  >
+                    Hari ini
+                  </button>
+
+                  <input
+                    type="date"
+                    value={deliveryDateFilter}
+                    onChange={(e) => setDeliveryDateFilter(e.target.value)}
+                    className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 outline-none"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4">
+              <PlanLineActualBarChart
+                badgeLabel="Plan vs Actual (Complete)"
+                rows={overallCompleteRows}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* ✅ ON PROGRESS */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-extrabold text-slate-900">
+                On Progress
+              </div>
+              <div className="text-xs font-medium text-slate-600"></div>
+            </div>
+
+            <div className="text-xs font-semibold text-slate-600">
+              Total:{" "}
+              <span className="text-slate-900">{activeDriversCount}</span>
+            </div>
+          </div>
+
+          <div className="mt-4 overflow-auto rounded-xl border border-slate-200">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-slate-700">
+                <tr className="border-b border-slate-200">
+                  <th className="text-left py-3 px-4 font-extrabold">Driver</th>
+                  <th className="text-left py-3 px-4 font-extrabold">
+                    Police Number
+                  </th>
+                  <th className="text-left py-3 px-4 font-extrabold">Route</th>
+                  <th className="text-left py-3 px-4 font-extrabold">
+                    Delivery Date
+                  </th>
+                  <th className="text-left py-3 px-4 font-extrabold">
+                    Updated
+                  </th>
+                </tr>
+              </thead>
+
+              <tbody className="divide-y divide-slate-200">
+                {(loading ? [] : activeDrivers).slice(0, 20).map((d) => {
+                  const { from, to } = getFromTo(d);
+                  const dir = (d.direction ?? "forward").toUpperCase();
+
+                  return (
+                    <tr key={d.id} className="hover:bg-slate-50">
+                      <td className="py-3 px-4 font-semibold text-slate-900">
+                        {d.driver?.name ?? "-"}
+                        {d.driver?.phone ? (
+                          <div className="text-xs font-semibold text-slate-500">
+                            {d.driver.phone}
+                          </div>
+                        ) : null}
+                      </td>
+
+                      <td className="py-3 px-4 text-slate-700 font-semibold">
+                        {d.plate ?? "-"}
+                      </td>
+
+                      <td className="py-3 px-4 text-slate-700">
+                        <div className="font-semibold text-slate-900">
+                          <span className="mr-2 inline-flex items-center rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-extrabold text-slate-700">
+                            {dir}
+                          </span>
+                          {from} → {to}
+                        </div>
+
+                        <div className="mt-0.5 text-xs font-semibold text-slate-500">
+                          ETD:{" "}
+                          <span className="text-slate-700">
+                            {normalizeTimeHHmm(d.etdTime)}
+                          </span>{" "}
+                          • ETA:{" "}
+                          <span className="text-slate-700">
+                            {normalizeTimeHHmm(d.etaTime)}
+                          </span>
+                        </div>
+                      </td>
+
+                      <td className="py-3 px-4 text-slate-700 font-semibold">
+                        {d.deliveryDate
+                          ? fmtDeliveryDate(d.deliveryDate)
+                          : fmtDateWIB(d.updatedAt)}
+                      </td>
+
+                      <td className="py-3 px-4 text-slate-600 font-medium">
+                        {fmtLastUpdate(d.updatedAt)}
+                      </td>
+                    </tr>
+                  );
+                })}
+
+                {!loading && activeDrivers.length === 0 && (
+                  <tr>
+                    <td className="py-5 px-4 text-slate-600" colSpan={5}>
+                      Belum ada trip yang berjalan.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* HISTORY COMPLETE */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div>
+              <div className="text-sm font-extrabold text-slate-900">History (Complete)</div>
+              <div className="text-xs font-medium text-slate-600">
+                trip selesai untuk tanggal delivery{" "}
+                <span className="font-semibold text-slate-900">
+                  {fmtDeliveryDate(deliveryDateFilter)}
+                </span>{" "}
+                (WIB)
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              {/* Group filter */}
+              <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2">
+                <div className="mr-1 text-[11px] font-extrabold text-slate-600">Group</div>
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     onClick={() => setPlanGroupFilter("ALL")}
@@ -840,30 +1603,26 @@ export default function DashboardPage() {
                     All
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => setPlanGroupFilter("YIMM")}
-                    className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
-                      planGroupFilter === "YIMM"
-                        ? "border-blue-200 bg-blue-50 text-blue-700"
-                        : "border-slate-200 bg-white text-slate-700"
-                    }`}
-                  >
-                    YIMM
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setPlanGroupFilter("SIM")}
-                    className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
-                      planGroupFilter === "SIM"
-                        ? "border-blue-200 bg-blue-50 text-blue-700"
-                        : "border-slate-200 bg-white text-slate-700"
-                    }`}
-                  >
-                    SIM
-                  </button>
+                  {availableGroups.map((g) => (
+                    <button
+                      key={g}
+                      type="button"
+                      onClick={() => setPlanGroupFilter(g)}
+                      className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
+                        planGroupFilter === g
+                          ? "border-blue-200 bg-blue-50 text-blue-700"
+                          : "border-slate-200 bg-white text-slate-700"
+                      }`}
+                    >
+                      {g}
+                    </button>
+                  ))}
                 </div>
+              </div>
+
+              {/* Date filter */}
+              <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2">
+                <div className="mr-1 text-[11px] font-extrabold text-slate-600">Date</div>
                 <button
                   type="button"
                   onClick={() => setDeliveryDateFilter(yesterdayWIB())}
@@ -887,6 +1646,7 @@ export default function DashboardPage() {
                 >
                   Hari ini
                 </button>
+
                 <input
                   type="date"
                   value={deliveryDateFilter}
@@ -894,29 +1654,11 @@ export default function DashboardPage() {
                   className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 outline-none"
                 />
               </div>
-            </div>
 
-            <div className="mt-4">
-              <PlanVsActualChart rows={planVsActualRows} />
-            </div>
-          </div>
-        </div>
-
-        {/* ON PROGRESS */}
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-extrabold text-slate-900">
-                On Progress
+              <div className="text-xs font-semibold text-slate-600">
+                Total:{" "}
+                <span className="text-slate-900">{filteredHistoryRows.length}</span>
               </div>
-              <div className="text-xs font-medium text-slate-600">
-                {/* menampilkan maksimal 20 baris • trip sedang berjalan */}
-              </div>
-            </div>
-
-            <div className="text-xs font-semibold text-slate-600">
-              Total:{" "}
-              <span className="text-slate-900">{activeDriversCount}</span>
             </div>
           </div>
 
@@ -925,109 +1667,14 @@ export default function DashboardPage() {
               <thead className="bg-slate-50 text-slate-700">
                 <tr className="border-b border-slate-200">
                   <th className="text-left py-3 px-4 font-extrabold">Driver</th>
-                  <th className="text-left py-3 px-4 font-extrabold">Plate</th>
                   <th className="text-left py-3 px-4 font-extrabold">
-                    Destination
+                    Police Number
                   </th>
                   <th className="text-left py-3 px-4 font-extrabold">
-                    Delivery Date
+                    Forward (Keberangkatan)
                   </th>
                   <th className="text-left py-3 px-4 font-extrabold">
-                    Updated
-                  </th>
-                </tr>
-              </thead>
-
-              <tbody className="divide-y divide-slate-200">
-                {(loading ? [] : activeDrivers).slice(0, 20).map((d) => (
-                  <tr key={d.id} className="hover:bg-slate-50">
-                    <td className="py-3 px-4 font-semibold text-slate-900">
-                      {d.driver?.name ?? "-"}
-                    </td>
-
-                    <td className="py-3 px-4 text-slate-700 font-semibold">
-                      {d.plate ?? "-"}
-                    </td>
-
-                    <td className="py-3 px-4 text-slate-700">
-                      <div className="font-semibold text-slate-900">
-                        {d.destination ?? "-"}
-                      </div>
-                      <div className="mt-0.5 text-xs font-semibold text-slate-500">
-                        ETD:{" "}
-                        <span className="text-slate-700">
-                          {d.etdTime ?? "-"}
-                        </span>{" "}
-                        • ETA:{" "}
-                        <span className="text-slate-700">
-                          {d.etaTime ?? "-"}
-                        </span>
-                      </div>
-                    </td>
-
-                    {/* ✅ Delivery Date: ambil dari mobile, fallback ke tanggal WIB updatedAt */}
-                    <td className="py-3 px-4 text-slate-700 font-semibold">
-                      {d.deliveryDate
-                        ? fmtDeliveryDate(d.deliveryDate)
-                        : fmtDateWIB(d.updatedAt)}
-                    </td>
-
-                    <td className="py-3 px-4 text-slate-600 font-medium">
-                      {fmtLastUpdate(d.updatedAt)}
-                    </td>
-                  </tr>
-                ))}
-
-                {!loading && activeDrivers.length === 0 && (
-                  <tr>
-                    <td className="py-5 px-4 text-slate-600" colSpan={5}>
-                      Belum ada trip yang berjalan.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="mt-3 text-xs font-medium text-slate-500">
-            {/* Trip akan otomatis hilang dari On Progress & Map setelah reverse
-            selesai (ETD + ETA). */}
-          </div>
-        </div>
-
-        {/* HISTORY COMPLETE */}
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-extrabold text-slate-900">
-                History (Complete)
-              </div>
-              <div className="text-xs font-medium text-slate-600">
-                trip selesai untuk tanggal delivery{" "}
-                <span className="font-semibold text-slate-900">
-                  {fmtDeliveryDate(deliveryDateFilter)}
-                </span>{" "}
-                (WIB)
-              </div>
-            </div>
-
-            <div className="text-xs font-semibold text-slate-600">
-              Total:{" "}
-              <span className="text-slate-900">{historyRows.length}</span>
-            </div>
-          </div>
-
-          <div className="mt-4 overflow-auto rounded-xl border border-slate-200">
-            <table className="w-full text-sm">
-              <thead className="bg-slate-50 text-slate-700">
-                <tr className="border-b border-slate-200">
-                  <th className="text-left py-3 px-4 font-extrabold">Driver</th>
-                  <th className="text-left py-3 px-4 font-extrabold">Plate</th>
-                  <th className="text-left py-3 px-4 font-extrabold">
-                    Forward
-                  </th>
-                  <th className="text-left py-3 px-4 font-extrabold">
-                    Reverse
+                    Reverse (Kepulangan)
                   </th>
                   <th className="text-left py-3 px-4 font-extrabold">
                     Delivery Date
@@ -1039,7 +1686,7 @@ export default function DashboardPage() {
               </thead>
 
               <tbody className="divide-y divide-slate-200">
-                {historyRows.slice(0, 30).map((r) => (
+                {filteredHistoryRows.slice(0, 30).map((r) => (
                   <tr
                     key={`${r.tripGroup}__${r.driverId}`}
                     className="hover:bg-slate-50"
@@ -1064,11 +1711,11 @@ export default function DashboardPage() {
                       <div className="mt-0.5 text-xs font-semibold text-slate-500">
                         ETD:{" "}
                         <span className="text-slate-700">
-                          {r.etdForward ?? "-"}
+                          {normalizeTimeHHmm(r.etdForward)}
                         </span>{" "}
                         • ETA:{" "}
                         <span className="text-slate-700">
-                          {r.etaForward ?? "-"}
+                          {normalizeTimeHHmm(r.etaForward)}
                         </span>
                       </div>
                     </td>
@@ -1080,16 +1727,15 @@ export default function DashboardPage() {
                       <div className="mt-0.5 text-xs font-semibold text-slate-500">
                         ETD:{" "}
                         <span className="text-slate-700">
-                          {r.etdReverse ?? "-"}
+                          {normalizeTimeHHmm(r.etdReverse)}
                         </span>{" "}
                         • ETA:{" "}
                         <span className="text-slate-700">
-                          {r.etaReverse ?? "-"}
+                          {normalizeTimeHHmm(r.etaReverse)}
                         </span>
                       </div>
                     </td>
 
-                    {/* ✅ Delivery Date: utamakan dari mobile, fallback ke lastUpdated */}
                     <td className="py-3 px-4 text-slate-700 font-semibold">
                       {r.deliveryDate
                         ? fmtDeliveryDate(r.deliveryDate)
@@ -1102,7 +1748,7 @@ export default function DashboardPage() {
                   </tr>
                 ))}
 
-                {historyRows.length === 0 && (
+                {filteredHistoryRows.length === 0 && (
                   <tr>
                     <td className="py-5 px-4 text-slate-600" colSpan={6}>
                       Belum ada trip selesai untuk tanggal ini.
@@ -1111,11 +1757,6 @@ export default function DashboardPage() {
                 )}
               </tbody>
             </table>
-          </div>
-
-          <div className="mt-3 text-xs font-medium text-slate-500">
-            {/* Note: History diambil dari report dengan filter complete = true dan
-            dateFrom = dateTo (tanggal delivery yang dipilih). */}
           </div>
         </div>
       </div>

@@ -15,12 +15,15 @@ const GREEN = {
 
 const MENU = [
   { href: "/dashboard", label: "Dashboard", icon: "grid" as const },
-  { href: "/live", label: "Live", icon: "radio" as const },
+  { href: "/live", label: "Live View", icon: "radio" as const },
+
+  // ✅ selalu tampil
+  { href: "/admin/plan", label: "Plan Delivery", icon: "plan" as const },
 ];
 
 const GENERAL = [{ href: "/logout", label: "Logout", icon: "logout" as const }];
 
-type IconName = "grid" | "radio" | "logout";
+type IconName = "grid" | "radio" | "plan" | "logout";
 
 function Icon({ name, active = false }: { name: IconName; active?: boolean }) {
   const stroke = active ? "#FFFFFF" : "#64748B";
@@ -57,6 +60,25 @@ function Icon({ name, active = false }: { name: IconName; active?: boolean }) {
           <circle cx="12" cy="12" r="2" />
           <path d="M5 12a7 7 0 0 1 14 0" />
           <path d="M2 12a10 10 0 0 1 20 0" />
+        </svg>
+      );
+    case "plan":
+      return (
+        <svg
+          width="22"
+          height="22"
+          viewBox="0 0 24 24"
+          stroke={stroke}
+          fill="none"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M9 4h6" />
+          <path d="M9 4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2" />
+          <path d="M9 8h6" />
+          <path d="M9 12h6" />
+          <path d="M9 16h6" />
         </svg>
       );
     case "logout":
@@ -119,7 +141,6 @@ function LogoutConfirmModal({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  // ESC to close
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -133,7 +154,6 @@ function LogoutConfirmModal({
 
   return (
     <div className="fixed inset-0 z-[9999]">
-      {/* Backdrop */}
       <button
         type="button"
         aria-label="Close"
@@ -141,7 +161,6 @@ function LogoutConfirmModal({
         className="absolute inset-0 bg-black/35 backdrop-blur-[2px]"
       />
 
-      {/* Panel */}
       <div className="relative h-full w-full flex items-center justify-center p-4">
         <div className="w-full max-w-sm rounded-2xl bg-white shadow-2xl border border-slate-200 overflow-hidden">
           <div className="p-5">
@@ -238,13 +257,11 @@ export default function AppSidebar({
     try {
       const saved = window.localStorage.getItem("sidebar-open");
       if (saved !== null) setOpen(saved === "1");
-    } catch {
-      // ignore
-    }
+    } catch {}
   }, []);
 
+  // ✅ tetap ada (biar tidak ganggu kode lain), tapi tidak dipakai untuk menu
   const [role, setRole] = useState<"admin" | "user" | "">("");
-
   useEffect(() => {
     const m = document.cookie.match(/(?:^|;\s*)asakai_role=([^;]+)/);
     const v = m ? decodeURIComponent(m[1]) : "";
@@ -254,9 +271,7 @@ export default function AppSidebar({
   useEffect(() => {
     try {
       window.localStorage.setItem("sidebar-open", open ? "1" : "0");
-    } catch {
-      // ignore
-    }
+    } catch {}
   }, [open]);
 
   useEffect(() => {
@@ -386,7 +401,7 @@ export default function AppSidebar({
                 return (
                   <button
                     key={g.href}
-                    onClick={() => setLogoutOpen(true)} // ✅ buka modal
+                    onClick={() => setLogoutOpen(true)}
                     className={[linkClass(g.href), "w-full"].join(" ")}
                     title={!open ? g.label : undefined}
                     type="button"
@@ -421,7 +436,6 @@ export default function AppSidebar({
         {content}
       </main>
 
-      {/* ✅ Modern Confirm Modal */}
       <LogoutConfirmModal
         open={logoutOpen}
         loading={logoutLoading}
