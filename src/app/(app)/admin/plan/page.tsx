@@ -5,6 +5,9 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 type PlanRow = {
   destination: string;
   group: string; // ✅ DINAMIS: ngikutin excel
+
+  // ✅ PLAN TIME (template): ETD/ETA di sini adalah TARGET dari Excel
+  // ✅ ACTUAL ETA: nanti dihitung dari GPS (AccuGPS) saat truck sampai di customer
   etd: string;
   eta: string;
 };
@@ -15,9 +18,51 @@ type PlanListResponse = {
   error?: string;
 };
 
+
 type UploadResponse =
   | { ok: true; count: number }
   | { ok: false; error?: string; errors?: string[] };
+
+// ================================
+// ✅ ACCUGPS REALTIME (untuk sinkron dengan RealtimeMap)
+// ================================
+type AccuGpsTracker = {
+  sn?: string;
+  id?: string | number;
+  alias?: string | null; // biasanya plate
+  latitude?: number | null;
+  longitude?: number | null;
+  speed?: number | null;
+};
+
+type AccuGpsTrackersResponse = {
+  status?: number;
+  message?: string;
+  data?: AccuGpsTracker[];
+};
+
+// ✅ master customer label by plate (harus sama dengan RealtimeMap)
+const CUSTOMER_BY_PLATE: Record<string, string> = {
+  "T 9521 AB": "Yamaha Pulogadung Lokal",
+  "T 9473 AB": "Yamaha Karawang",
+  "T 8854 DH": "Yamaha Pg export",
+  "T 9508 AB": "Yamaha Karawang",
+  "T 9472 AB": "Yamaha Pulogadung Lokal",
+};
+
+function normalizePlate(input?: string | null) {
+  // normalisasi supaya mapping stabil (spasi, case)
+  const s = String(input ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, " ");
+  return s;
+}
+
+function getCustomerLabel(plate?: string | null) {
+  const key = normalizePlate(plate);
+  return CUSTOMER_BY_PLATE[key] ?? "-";
+}
 
 function Badge({
   children,
@@ -71,6 +116,11 @@ export default function AdminPlanPage() {
 
   const [lastRefreshed, setLastRefreshed] = useState<string | null>(null);
 
+  const [gpsLoading, setGpsLoading] = useState(false);
+  const [gpsErr, setGpsErr] = useState<string | null>(null);
+  const [gpsLastRefreshed, setGpsLastRefreshed] = useState<string | null>(null);
+  const [gpsTrackers, setGpsTrackers] = useState<AccuGpsTracker[]>([]);
+
   // ✅ otomatis: group counts dari data
   const groupCounts = useMemo(() => {
     const m = new Map<string, number>();
@@ -80,6 +130,24 @@ export default function AdminPlanPage() {
     }
     return Array.from(m.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   }, [plans]);
+
+  const gpsPlates = useMemo(() => {
+    const plates = gpsTrackers
+      .map((t) => normalizePlate(t.alias))
+      .filter((x) => x && x !== "-");
+
+    // unique
+    return Array.from(new Set(plates)).sort((a, b) => a.localeCompare(b));
+  }, [gpsTrackers]);
+
+  const gpsCustomerCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const p of gpsPlates) {
+      const c = getCustomerLabel(p);
+      m.set(c, (m.get(c) ?? 0) + 1);
+    }
+    return Array.from(m.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [gpsPlates]);
 
   const fetchPlan = async () => {
     try {
@@ -101,12 +169,45 @@ export default function AdminPlanPage() {
     }
   };
 
+  const fetchGpsTrackers = async () => {
+    try {
+      setGpsErr(null);
+      setGpsLoading(true);
+
+      // ✅ harus sama dengan RealtimeMap (server proxy handle token)
+      const res = await fetch("/api/gps/trackers", { cache: "no-store" });
+      if (!res.ok) {
+        setGpsErr(`Gagal memuat GPS (HTTP ${res.status}).`);
+        setGpsTrackers([]);
+        return;
+      }
+
+      const json: AccuGpsTrackersResponse = await res.json();
+      const rows = Array.isArray(json?.data) ? json.data : [];
+
+      setGpsTrackers(rows);
+      setGpsLastRefreshed(fmtNowWIB());
+    } catch (e: any) {
+      setGpsErr("Gagal memuat GPS (cek server/API). ");
+      setGpsTrackers([]);
+    } finally {
+      setGpsLoading(false);
+    }
+  };
+
   useEffect(() => {
     (async () => {
       setLoading(true);
       await fetchPlan();
       setLoading(false);
+
+      // ✅ load GPS once at startup
+      await fetchGpsTrackers();
     })();
+
+    // ✅ poll GPS (hindari rate limit)
+    const id = window.setInterval(fetchGpsTrackers, 15000);
+    return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -191,10 +292,27 @@ export default function AdminPlanPage() {
             )}
             <Badge>{plans.length} plan</Badge>
 
+            {/* ✅ GPS status */}
+            <Badge tone={gpsErr ? "red" : "emerald"}>
+              GPS: {gpsErr ? "ERROR" : `${gpsPlates.length} truck`}
+            </Badge>
+            {gpsLastRefreshed ? (
+              <Badge tone="slate">GPS refresh: {gpsLastRefreshed}</Badge>
+            ) : (
+              <Badge tone="slate">GPS refresh: -</Badge>
+            )}
+
             {/* ✅ otomatis: badge group ikut excel */}
             {groupCounts.map(([g, c]) => (
               <Badge key={g} tone="blue">
                 {g}: {c}
+              </Badge>
+            ))}
+
+            {/* ✅ otomatis: badge customer dari GPS */}
+            {gpsCustomerCounts.map(([c, n]) => (
+              <Badge key={c} tone="slate">
+                {c}: {n}
               </Badge>
             ))}
           </div>
@@ -278,6 +396,74 @@ export default function AdminPlanPage() {
               </div>
             </div>
           )}
+        </div>
+
+        {/* ✅ Realtime GPS (AccuGPS) */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-extrabold text-slate-900">
+                Realtime Trucks (AccuGPS)
+              </div>
+              <div className="text-xs font-medium text-slate-600">
+                Data ini harus sama dengan RealtimeMap. Plan akan dibandingkan dengan truck yang aktif di sini.
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {gpsLoading ? <Badge tone="slate">Loading...</Badge> : null}
+              {gpsErr ? <Badge tone="red">{gpsErr}</Badge> : null}
+              <button
+                type="button"
+                onClick={fetchGpsTrackers}
+                disabled={gpsLoading}
+                className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
+                  gpsLoading
+                    ? "border-slate-200 bg-slate-100 text-slate-500 cursor-not-allowed"
+                    : "border-slate-200 bg-white text-slate-700"
+                }`}
+              >
+                {gpsLoading ? "Refreshing..." : "Refresh GPS"}
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-4 overflow-auto rounded-xl border border-slate-200">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-slate-700">
+                <tr className="border-b border-slate-200">
+                  <th className="text-left py-3 px-4 font-extrabold">Police Number</th>
+                  <th className="text-left py-3 px-4 font-extrabold">Customer</th>
+                  <th className="text-left py-3 px-4 font-extrabold">Last</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {gpsPlates.map((p) => (
+                  <tr key={p} className="hover:bg-slate-50">
+                    <td className="py-3 px-4 font-semibold text-slate-900">{p}</td>
+                    <td className="py-3 px-4">
+                      <Badge tone="slate">{getCustomerLabel(p)}</Badge>
+                    </td>
+                    <td className="py-3 px-4 text-xs font-semibold text-slate-600">
+                      {gpsLastRefreshed ?? "-"}
+                    </td>
+                  </tr>
+                ))}
+
+                {!gpsLoading && gpsPlates.length === 0 && (
+                  <tr>
+                    <td className="py-5 px-4 text-slate-600" colSpan={3}>
+                      Belum ada truck aktif dari GPS. Cek /api/gps/trackers.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="mt-3 text-xs font-medium text-slate-500">
+            Catatan: ETD/ETA di Plan adalah target (template). Actual ETA akan dihitung saat truck sampai di customer (GPS).
+          </div>
         </div>
 
         {/* Table */}

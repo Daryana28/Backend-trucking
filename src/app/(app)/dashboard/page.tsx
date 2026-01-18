@@ -4,6 +4,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
+
 type DriverStatus = {
   id: string;
   driverId: string;
@@ -151,6 +152,32 @@ function yesterdayWIB() {
   const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
   const dd = String(dt.getUTCDate()).padStart(2, "0");
   return `${yy}-${mm}-${dd}`;
+}
+
+// ================================
+// ✅ CUSTOMER MASTER (label by plate)
+// ================================
+const CUSTOMER_BY_PLATE: Record<string, string> = {
+  "T 9521 AB": "Yamaha Pulogadung Lokal",
+  "T 9473 AB": "Yamaha Karawang",
+  "T 8854 DH": "Yamaha Pg export",
+  "T 9508 AB": "Yamaha Karawang",
+  "T 9472 AB": "Yamaha Pulogadung Lokal",
+};
+
+function normalizePlate(input?: string | null) {
+  if (!input) return "-";
+  // Hilangkan suffix setelah tanda '-' (contoh: "T 9521 AB - XYZ" => "T 9521 AB")
+  const raw = String(input).trim();
+  const beforeDash = raw.split("-")[0]?.trim() ?? raw;
+  // rapikan spasi dan uppercase
+  return beforeDash.replace(/\s+/g, " ").toUpperCase();
+}
+
+function getCustomerLabelByPlate(plate?: string | null) {
+  const p = normalizePlate(plate);
+  if (!p || p === "-") return "";
+  return CUSTOMER_BY_PLATE[p] ?? "";
 }
 
 // ================================
@@ -723,13 +750,11 @@ function PlanLineActualBarChart({
 }
 
 function PlanVsActualChart({
-  mode,
   rows,
-  getGroup,
 }: {
-  mode: "forward" | "reverse";
   rows: {
     destination: string;
+    groupLabel: string;
     planEtd: string;
     planEta: string;
     planDurMin: number;
@@ -739,19 +764,16 @@ function PlanVsActualChart({
     // delay (boolean saja untuk display)
     delayedAny: boolean;
   }[];
-  getGroup: (dest: string) => string;
 }) {
   const maxV = Math.max(
     1,
     ...rows.map((r) => Math.max(r.planDurMin, r.actualAvgMin ?? 0))
   );
 
-  const modeLabel = mode === "forward" ? "Keberangkatan" : "Kepulangan";
-
   return (
     <div className="w-full">
       <div className="mb-3 flex items-center justify-between">
-        <Badge>Plan vs Actual • {modeLabel}</Badge>
+        <Badge>Plan vs Actual</Badge>
         <div className="text-xs font-semibold text-slate-600">
           Durasi (menit)
         </div>
@@ -771,7 +793,7 @@ function PlanVsActualChart({
                 r.actualAvgMin == null ? 0 : clamp((actV / maxV) * 100, 3, 100);
 
               return (
-                <div key={`${mode}__${r.destination}`} className="space-y-2">
+                <div key={r.destination} className="space-y-2">
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
                       <div className="truncate text-sm font-extrabold text-slate-900">
@@ -796,7 +818,7 @@ function PlanVsActualChart({
 
                     <div className="shrink-0">
                       <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-4 py-2 text-[13px] font-extrabold text-blue-700">
-                        {getGroup(r.destination)}
+                        {r.groupLabel}
                       </span>
                     </div>
                   </div>
@@ -871,37 +893,188 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
+  const DASHBOARD_LATEST_CACHE_KEY = "dashboard-latest-cache-v1";
+  const MAP_CACHE_KEY = "realtime-map-cache-v1";
+
   const [deliveryDateFilter, setDeliveryDateFilter] = useState<string>(
     todayWIB()
   );
 
   const [planGroupFilter, setPlanGroupFilter] = useState<string>("ALL");
 
-  // ✅ toggle chart forward/reverse
-  const [planLegMode, setPlanLegMode] = useState<"forward" | "reverse">(
-    "forward"
-  );
-
   const [planFromDb, setPlanFromDb] = useState<PlanMap | null>(null);
 
   const [latest, setLatest] = useState<DriverStatus[]>([]);
 
+  // ✅ keep last valid realtime payload supaya truck tidak hilang saat API error/429/empty
+  const lastOkLatestRef = useRef<DriverStatus[]>([]);
+  const didFirstLoadRef = useRef(false);
+
+  // ✅ hanya yang masih progress (belum complete) + ada posisi
+  // NOTE: didefinisikan lebih awal karena dipakai oleh memo lain (activePlateSet/activeDestSet)
+  const activeDrivers = useMemo(() => {
+    return latest.filter((d) => {
+      if (d.lat == null || d.lng == null) return false;
+      if (d.isFinished === true) return false; // ✅ COMPLETE => hide
+      return true;
+    });
+  }, [latest]);
+
+  const activeDriversFiltered = useMemo(() => {
+    if (planGroupFilter === "ALL") return activeDrivers;
+    return activeDrivers.filter(
+      (d) => getCustomerLabelByPlate(d.plate) === planGroupFilter
+    );
+  }, [activeDrivers, planGroupFilter]);
+
   const [historyRows, setHistoryRows] = useState<HistoryRow[]>([]);
   const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
+
+  useEffect(() => {
+    try {
+      const raw =
+        window.sessionStorage.getItem(DASHBOARD_LATEST_CACHE_KEY) ??
+        window.sessionStorage.getItem(MAP_CACHE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      const cached = Array.isArray(parsed?.drivers) ? parsed.drivers : [];
+      if (!cached.length) return;
+      setLatest(cached);
+      lastOkLatestRef.current = cached;
+      if (!didFirstLoadRef.current) {
+        didFirstLoadRef.current = true;
+        setLoading(false);
+      }
+    } catch {}
+  }, []);
+
+  // ✅ DASHBOARD harus ngikutin kendaraan yang ada di Realtime Map
+  // Basisnya: plate/destination yang sedang aktif (activeDrivers)
+  const activePlateSet = useMemo(() => {
+    const s = new Set<string>();
+    for (const d of activeDriversFiltered) s.add(normalizePlate(d.plate));
+    return s;
+  }, [activeDriversFiltered]);
+
+  const activeDestSet = useMemo(() => {
+    const s = new Set<string>();
+    for (const d of activeDriversFiltered) {
+      const dest = String(d.destination ?? "").trim();
+      if (dest) s.add(dest);
+    }
+    return s;
+  }, [activeDriversFiltered]);
+
+  // ✅ history untuk dashboard = hanya yang relevan dengan kendaraan aktif
+  // fallback: kalau tidak ada kendaraan aktif, pakai history full
+  const dashboardHistoryRows = useMemo(() => {
+    if (activeDriversFiltered.length === 0) return historyRows;
+
+    const plateSet = activePlateSet;
+    const destSet = activeDestSet;
+
+    return historyRows.filter((r) => {
+      const p = normalizePlate(r.plate);
+      if (p && p !== "-" && plateSet.has(p)) return true;
+
+      const df = String(r.destinationForward ?? "").trim();
+      const dr = String(r.destinationReverse ?? "").trim();
+      if (df && destSet.has(df)) return true;
+      if (dr && destSet.has(dr)) return true;
+      return false;
+    });
+  }, [historyRows, activeDriversFiltered, activePlateSet, activeDestSet]);
+
+  // ✅ destinasi yang relevan untuk chart (biar chart tidak tampil semua master plan)
+  const relevantDestSet = useMemo(() => {
+    if (activeDriversFiltered.length === 0) return null as Set<string> | null;
+
+    const s = new Set<string>();
+
+    for (const d of activeDriversFiltered) {
+      const dest = String(d.destination ?? "").trim();
+      if (dest) s.add(dest);
+    }
+
+    for (const r of dashboardHistoryRows) {
+      const df = String(r.destinationForward ?? "").trim();
+      const dr = String(r.destinationReverse ?? "").trim();
+      if (df) s.add(df);
+      if (dr) s.add(dr);
+    }
+
+    return s;
+  }, [activeDriversFiltered, dashboardHistoryRows]);
 
   const fetchLatest = async () => {
     try {
       setErr(null);
-      const res = await fetch("/api/driver-status/latest", {
-        cache: "no-store",
-      });
+
+      // ✅ Ambil realtime langsung dari AccuGPS proxy (sama seperti RealtimeMap)
+      const res = await fetch("/api/gps/trackers", { cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: DriverStatus[] = await res.json();
-      setLatest(Array.isArray(data) ? data : []);
+
+      const json = await res.json();
+      const rows = Array.isArray(json?.data) ? json.data : [];
+
+      const nowIso = new Date().toISOString();
+
+      const mapped: DriverStatus[] = rows
+        .map((r: any) => {
+          const lat = typeof r?.latitude === "number" ? r.latitude : null;
+          const lng = typeof r?.longitude === "number" ? r.longitude : null;
+          const alias = typeof r?.alias === "string" ? r.alias : null;
+          const sn = typeof r?.sn === "string" ? r.sn : String(r?.id ?? "");
+
+          return {
+            id: sn,
+            driverId: sn,
+
+            lat,
+            lng,
+            heading: typeof r?.degree === "number" ? r.degree : null,
+
+            // AccuGPS trackers endpoint tidak menyediakan route/ETD/ETA
+            direction: null,
+            origin: null,
+            destination: null,
+            plate: alias,
+            etdTime: null,
+            etaTime: null,
+            isFinished: false,
+
+            updatedAt: nowIso,
+            deliveryDate: null,
+
+            driver: {
+              name: alias ?? "-",
+              phone: null,
+            },
+          } as DriverStatus;
+        })
+        // hanya yang valid posisinya
+        .filter((d: DriverStatus) => d.lat != null && d.lng != null);
+
+      // kalau payload kosong/limit, jangan timpa data terakhir yg valid
+      if (mapped.length > 0) {
+        lastOkLatestRef.current = mapped;
+        setLatest(mapped);
+      } else {
+        if (lastOkLatestRef.current.length > 0)
+          setLatest(lastOkLatestRef.current);
+        else setLatest([]);
+      }
     } catch {
+      // error -> jangan kosongkan data realtime
+      if (lastOkLatestRef.current.length > 0) {
+        setLatest(lastOkLatestRef.current);
+      }
       setErr("Gagal memuat data realtime (cek server/API).");
     } finally {
-      setLoading(false);
+      if (!didFirstLoadRef.current) {
+        didFirstLoadRef.current = true;
+        setLoading(false);
+      }
     }
   };
 
@@ -968,12 +1141,22 @@ export default function DashboardPage() {
   };
 
   useEffect(() => {
+    if (!latest.length) return;
+    try {
+      window.sessionStorage.setItem(
+        DASHBOARD_LATEST_CACHE_KEY,
+        JSON.stringify({ drivers: latest, savedAt: Date.now() })
+      );
+    } catch {}
+  }, [latest]);
+
+  useEffect(() => {
     fetchLatest();
     fetchHistory(deliveryDateFilter);
     fetchMetrics();
     fetchPlan(deliveryDateFilter);
 
-    const id1 = window.setInterval(fetchLatest, 5000);
+    const id1 = window.setInterval(fetchLatest, 15000);
     const idH = window.setInterval(
       () => fetchHistory(deliveryDateFilter),
       30000
@@ -996,29 +1179,20 @@ export default function DashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deliveryDateFilter]);
 
-  // ✅ hanya yang masih progress (belum complete) + ada posisi
-  const activeDrivers = useMemo(() => {
-    return latest.filter((d) => {
-      if (d.lat == null || d.lng == null) return false;
-      if (d.isFinished === true) return false; // ✅ COMPLETE => hide
-      return true;
-    });
-  }, [latest]);
-
-  const activeDriversCount = activeDrivers.length;
+  const activeDriversCount = activeDriversFiltered.length;
 
   const activeTrucksCount = useMemo(() => {
     const set = new Set<string>();
-    for (const d of activeDrivers) if (d.plate) set.add(d.plate);
+    for (const d of activeDriversFiltered) if (d.plate) set.add(d.plate);
     return set.size;
-  }, [activeDrivers]);
+  }, [activeDriversFiltered]);
 
   const lastUpdateIso = useMemo(() => {
     let max: string | null = null;
-    for (const d of activeDrivers)
+    for (const d of activeDriversFiltered)
       if (!max || d.updatedAt > max) max = d.updatedAt;
     return max;
-  }, [activeDrivers]);
+  }, [activeDriversFiltered]);
 
   // ✅ pilih plan yang dipakai: DB > fallback
   const effectivePlan: PlanMap = useMemo(() => {
@@ -1038,20 +1212,34 @@ export default function DashboardPage() {
 
   const availableGroups = useMemo(() => {
     const s = new Set<string>();
-    for (const dest of Object.keys(effectivePlan)) {
-      const g = (effectivePlan[dest]?.group ?? "").trim();
-      if (g) s.add(g);
+    for (const d of activeDrivers) {
+      const label = getCustomerLabelByPlate(d.plate);
+      if (label) s.add(label);
+    }
+    for (const r of historyRows) {
+      const label = getCustomerLabelByPlate(r.plate);
+      if (label) s.add(label);
     }
     return Array.from(s).sort((a, b) => a.localeCompare(b));
-  }, [effectivePlan]);
+  }, [activeDrivers, historyRows]);
 
-  const getGroupByDest = (dest: string) =>
-    (effectivePlan[dest]?.group ?? "").trim() || "OTHER";
+  const groupByDestination = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const r of dashboardHistoryRows) {
+      const dest = (r.destinationForward ?? "").trim();
+      if (!dest) continue;
+      const label = getCustomerLabelByPlate(r.plate);
+      if (label && !m.has(dest)) m.set(dest, label);
+    }
+    return m;
+  }, [dashboardHistoryRows]);
 
-  // ✅ rows untuk Plan vs Actual per LEG (forward/reverse)
+  // ✅ rows untuk Plan vs Actual (pakai forward)
   const planVsActualRows = useMemo(() => {
     const dests = Object.keys(effectivePlan).filter((dest) => {
-      const g = (effectivePlan[dest]?.group ?? "").trim();
+      if (relevantDestSet && !relevantDestSet.has(dest)) return false;
+
+      const g = groupByDestination.get(dest) ?? "";
       if (planGroupFilter === "ALL") return true;
       return g === planGroupFilter;
     });
@@ -1059,20 +1247,17 @@ export default function DashboardPage() {
     const buckets = new Map<string, number[]>();
     const delayedDest = new Set<string>();
 
-    for (const r of historyRows) {
-      const dest =
-        planLegMode === "forward"
-          ? (r.destinationForward ?? "").trim()
-          : (r.destinationReverse ?? "").trim();
+    for (const r of dashboardHistoryRows) {
+      const dest = (r.destinationForward ?? "").trim();
 
       if (!dest || !effectivePlan[dest]) continue;
 
-      const g = (effectivePlan[dest]?.group ?? "").trim();
+      const g = groupByDestination.get(dest) ?? "";
       if (planGroupFilter !== "ALL" && g !== planGroupFilter) continue;
 
-      // duration actual sesuai leg
-      const etdA = planLegMode === "forward" ? r.etdForward : r.etdReverse;
-      const etaA = planLegMode === "forward" ? r.etaForward : r.etaReverse;
+      // duration actual (forward)
+      const etdA = r.etdForward;
+      const etaA = r.etaForward;
 
       const dur = diffMin(etdA, etaA);
       if (dur != null) {
@@ -1081,8 +1266,8 @@ export default function DashboardPage() {
         buckets.set(dest, arr);
       }
 
-      // delay check vs plan sesuai leg (ETD atau ETA lewat plan)
-      const plan = effectivePlan[dest]?.[planLegMode];
+      // delay check vs plan (ETD atau ETA lewat plan)
+      const plan = effectivePlan[dest]?.forward;
       const de = delayMin(plan?.etd, etdA);
       const da = delayMin(plan?.eta, etaA);
       if ((de != null && de > 0) || (da != null && da > 0)) {
@@ -1092,7 +1277,7 @@ export default function DashboardPage() {
 
     return dests
       .map((dest) => {
-        const plan = effectivePlan[dest]?.[planLegMode];
+        const plan = effectivePlan[dest]?.forward;
         const planEtd = normalizeTimeHHmm(plan?.etd ?? "-");
         const planEta = normalizeTimeHHmm(plan?.eta ?? "-");
         const planDur = diffMin(planEtd, planEta) ?? 0;
@@ -1103,6 +1288,7 @@ export default function DashboardPage() {
 
         return {
           destination: dest,
+          groupLabel: groupByDestination.get(dest) ?? "-",
           planEtd,
           planEta,
           planDurMin: planDur,
@@ -1112,12 +1298,20 @@ export default function DashboardPage() {
         };
       })
       .sort((a, b) => a.destination.localeCompare(b.destination));
-  }, [historyRows, planGroupFilter, effectivePlan, planLegMode]);
+  }, [
+    dashboardHistoryRows,
+    planGroupFilter,
+    effectivePlan,
+    relevantDestSet,
+    groupByDestination,
+  ]);
 
   // ✅ Overall delivery complete: bandingkan target plan (1/destinasi) vs aktual (jumlah delivery complete)
   const overallCompleteRows = useMemo(() => {
     const dests = Object.keys(effectivePlan).filter((dest) => {
-      const g = (effectivePlan[dest]?.group ?? "").trim();
+      if (relevantDestSet && !relevantDestSet.has(dest)) return false;
+
+      const g = groupByDestination.get(dest) ?? "";
       if (planGroupFilter === "ALL") return true;
       return g === planGroupFilter;
     });
@@ -1125,14 +1319,14 @@ export default function DashboardPage() {
     // complete count per destination (ambil dari history complete)
     const cntMap = new Map<string, number>();
 
-    for (const r of historyRows) {
+    for (const r of dashboardHistoryRows) {
       if (!r.isComplete) continue;
 
       // destination untuk grouping cukup pakai forward (master destinasi)
       const dest = (r.destinationForward ?? "").trim();
       if (!dest || !effectivePlan[dest]) continue;
 
-      const g = (effectivePlan[dest]?.group ?? "").trim();
+      const g = groupByDestination.get(dest) ?? "";
       if (planGroupFilter !== "ALL" && g !== planGroupFilter) continue;
 
       cntMap.set(dest, (cntMap.get(dest) ?? 0) + 1);
@@ -1147,44 +1341,35 @@ export default function DashboardPage() {
         completeCount: cntMap.get(dest) ?? 0,
       }))
       .sort((a, b) => a.label.localeCompare(b.label));
-  }, [historyRows, effectivePlan, planGroupFilter]);
+  }, [dashboardHistoryRows, effectivePlan, planGroupFilter, relevantDestSet, groupByDestination]);
 
-  // ✅ History filter: Group (based on destinationForward's plan group)
+  // ✅ History filter: Group (based on actual customer label)
   const filteredHistoryRows = useMemo(() => {
-    if (planGroupFilter === "ALL") return historyRows;
+    if (planGroupFilter === "ALL") return dashboardHistoryRows;
 
-    return historyRows.filter((r) => {
-      const dest = (r.destinationForward ?? "").trim();
-      if (!dest) return false;
-      const g = (effectivePlan[dest]?.group ?? "").trim();
+    return dashboardHistoryRows.filter((r) => {
+      const g = getCustomerLabelByPlate(r.plate);
       return g === planGroupFilter;
     });
-  }, [historyRows, effectivePlan, planGroupFilter]);
+  }, [dashboardHistoryRows, planGroupFilter]);
 
-  // ✅ A: On-time vs Delay summary (ikuti Mode + Group + Date)
+  // ✅ A: On-time vs Delay summary (forward)
   const onTimeDelaySummary = useMemo(() => {
     let onTime = 0;
     let delayed = 0;
     let noData = 0;
 
-    for (const r of historyRows) {
-      // destination sesuai leg
-      const dest =
-        planLegMode === "forward"
-          ? (r.destinationForward ?? "").trim()
-          : (r.destinationReverse ?? "").trim();
+    for (const r of filteredHistoryRows) {
+      const dest = (r.destinationForward ?? "").trim();
 
       if (!dest || !effectivePlan[dest]) continue;
 
-      const g = (effectivePlan[dest]?.group ?? "").trim();
-      if (planGroupFilter !== "ALL" && g !== planGroupFilter) continue;
-
-      const plan = effectivePlan[dest]?.[planLegMode];
+      const plan = effectivePlan[dest]?.forward;
       const planEtd = plan?.etd ?? null;
       const planEta = plan?.eta ?? null;
 
-      const etdA = planLegMode === "forward" ? r.etdForward : r.etdReverse;
-      const etaA = planLegMode === "forward" ? r.etaForward : r.etaReverse;
+      const etdA = r.etdForward;
+      const etaA = r.etaForward;
 
       const de = delayMin(planEtd, etdA);
       const da = delayMin(planEta, etaA);
@@ -1202,26 +1387,20 @@ export default function DashboardPage() {
     }
 
     return { onTime, delayed, noData };
-  }, [historyRows, effectivePlan, planGroupFilter, planLegMode]);
+  }, [filteredHistoryRows, effectivePlan]);
 
   // ✅ C: Top delay destinations (avg delay minutes) - Top 5
   const topDelayDestinations = useMemo(() => {
     const map = new Map<string, number[]>();
 
-    for (const r of historyRows) {
-      const dest =
-        planLegMode === "forward"
-          ? (r.destinationForward ?? "").trim()
-          : (r.destinationReverse ?? "").trim();
+    for (const r of filteredHistoryRows) {
+      const dest = (r.destinationForward ?? "").trim();
 
       if (!dest || !effectivePlan[dest]) continue;
 
-      const g = (effectivePlan[dest]?.group ?? "").trim();
-      if (planGroupFilter !== "ALL" && g !== planGroupFilter) continue;
-
-      const plan = effectivePlan[dest]?.[planLegMode];
-      const etdA = planLegMode === "forward" ? r.etdForward : r.etdReverse;
-      const etaA = planLegMode === "forward" ? r.etaForward : r.etaReverse;
+      const plan = effectivePlan[dest]?.forward;
+      const etdA = r.etdForward;
+      const etaA = r.etaForward;
 
       const de = delayMin(plan?.etd ?? null, etdA);
       const da = delayMin(plan?.eta ?? null, etaA);
@@ -1247,7 +1426,7 @@ export default function DashboardPage() {
       }))
       .sort((a, b) => b.avgDelayMin - a.avgDelayMin)
       .slice(0, 5);
-  }, [historyRows, effectivePlan, planGroupFilter, planLegMode]);
+  }, [filteredHistoryRows, effectivePlan]);
 
   return (
     <div className="min-h-[calc(100vh-4rem)] w-full bg-slate-50">
@@ -1404,36 +1583,7 @@ export default function DashboardPage() {
               />
             </div>
 
-            {/* Mode */}
-            <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2">
-              <div className="mr-1 text-[11px] font-extrabold text-slate-600">
-                Mode
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setPlanLegMode("forward")}
-                  className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
-                    planLegMode === "forward"
-                      ? "border-blue-200 bg-blue-50 text-blue-700"
-                      : "border-slate-200 bg-white text-slate-700"
-                  }`}
-                >
-                  Forward
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPlanLegMode("reverse")}
-                  className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
-                    planLegMode === "reverse"
-                      ? "border-blue-200 bg-blue-50 text-blue-700"
-                      : "border-slate-200 bg-white text-slate-700"
-                  }`}
-                >
-                  Reverse
-                </button>
-              </div>
-            </div>
+            <div />
           </div>
         </div>
 
@@ -1456,31 +1606,6 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* ✅ Grafik baru: Overall Delivery Complete (Plan line, Actual bar) */}
-        <div className="grid grid-cols-1 gap-4">
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-              <div>
-                <div className="text-sm font-extrabold text-slate-900">
-                  Overall Delivery (Complete)
-                </div>
-                <div className="text-xs font-medium text-slate-600">
-                  <span className="font-semibold text-slate-900">
-                    {fmtDeliveryDate(deliveryDateFilter)}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-4">
-              <PlanLineActualBarChart
-                badgeLabel="Plan vs Actual (Complete)"
-                rows={overallCompleteRows}
-              />
-            </div>
-          </div>
-        </div>
-
         {/* ✅ Plan vs Actual + Toggle Forward/Reverse */}
         <div className="grid grid-cols-1 gap-4">
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -1498,11 +1623,7 @@ export default function DashboardPage() {
             </div>
 
             <div className="mt-4">
-              <PlanVsActualChart
-                mode={planLegMode}
-                rows={planVsActualRows}
-                getGroup={getGroupByDest}
-              />
+              <PlanVsActualChart rows={planVsActualRows} />
             </div>
           </div>
         </div>
@@ -1542,7 +1663,7 @@ export default function DashboardPage() {
               </thead>
 
               <tbody className="divide-y divide-slate-200">
-                {(loading ? [] : activeDrivers).slice(0, 20).map((d) => {
+                {(loading ? [] : activeDriversFiltered).slice(0, 20).map((d) => {
                   const { from, to } = getFromTo(d);
                   const dir = (d.direction ?? "forward").toUpperCase();
 
@@ -1558,7 +1679,12 @@ export default function DashboardPage() {
                       </td>
 
                       <td className="py-3 px-4 text-slate-700 font-semibold">
-                        {d.plate ?? "-"}
+                        {normalizePlate(d.plate)}
+                        {getCustomerLabelByPlate(d.plate) ? (
+                          <div className="text-xs font-semibold text-slate-500">
+                            {getCustomerLabelByPlate(d.plate)}
+                          </div>
+                        ) : null}
                       </td>
 
                       <td className="py-3 px-4 text-slate-700">
@@ -1594,7 +1720,7 @@ export default function DashboardPage() {
                   );
                 })}
 
-                {!loading && activeDrivers.length === 0 && (
+                {!loading && activeDriversFiltered.length === 0 && (
                   <tr>
                     <td className="py-5 px-4 text-slate-600" colSpan={5}>
                       Belum ada trip yang berjalan.
@@ -1669,7 +1795,12 @@ export default function DashboardPage() {
                     </td>
 
                     <td className="py-3 px-4 font-semibold text-slate-700">
-                      {r.plate ?? "-"}
+                      {normalizePlate(r.plate)}
+                      {getCustomerLabelByPlate(r.plate) ? (
+                        <div className="text-xs font-semibold text-slate-500">
+                          {getCustomerLabelByPlate(r.plate)}
+                        </div>
+                      ) : null}
                     </td>
 
                     <td className="py-3 px-4 text-slate-700">

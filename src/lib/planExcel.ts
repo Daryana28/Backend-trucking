@@ -10,6 +10,25 @@ type ParsedRow = {
   reverseEta: string;
 };
 
+// ================================
+// ✅ CUSTOMER MASTER (group values must match dashboard grouping)
+// ================================
+const CUSTOMER_BY_PLATE: Record<string, string> = {
+  "T 9521 AB": "Yamaha Pulogadung Lokal",
+  "T 9473 AB": "Yamaha Karawang",
+  "T 8854 DH": "Yamaha Pg export",
+  "T 9508 AB": "Yamaha Karawang",
+  "T 9472 AB": "Yamaha Pulogadung Lokal",
+};
+
+const VALID_GROUPS = Array.from(
+  new Set(Object.values(CUSTOMER_BY_PLATE).map((x) => String(x ?? "").trim()))
+).filter(Boolean);
+
+function normalizeGroup(input: any) {
+  return String(input ?? "").trim();
+}
+
 function isYmd(s: string) {
   return /^\d{4}-\d{2}-\d{2}$/.test((s ?? "").trim());
 }
@@ -88,7 +107,25 @@ export function buildPlanTemplateXlsxBuffer() {
     [
       "2026-01-04",
       "YIMM PG LOKAL PO 1",
-      "YIMM",
+      "Yamaha Pulogadung Lokal",
+      "05:00",
+      "08:00",
+      "10:00",
+      "13:00",
+    ],
+    [
+      "2026-01-04",
+      "YIMM KARAWANG PO 1",
+      "Yamaha Karawang",
+      "05:00",
+      "08:00",
+      "10:00",
+      "13:00",
+    ],
+    [
+      "2026-01-04",
+      "YIMM PG EXPORT C1",
+      "Yamaha Pg export",
       "05:00",
       "08:00",
       "10:00",
@@ -110,6 +147,27 @@ export function buildPlanTemplateXlsxBuffer() {
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "PLAN");
+
+  // ✅ README sheet: supaya user ngerti nilai kolom `group` harus apa
+  const readme = XLSX.utils.aoa_to_sheet([
+    ["NOTE"],
+    [
+      "Kolom `group` WAJIB sama dengan grouping di Dashboard (customer label). Jika tidak sama, plan tidak akan terbaca untuk perbandingan realtime.",
+    ],
+    [""],
+    ["Valid group/customer:"],
+    ...VALID_GROUPS.map((g) => [g]),
+    [""],
+    ["Master plate → customer:"],
+    ...Object.entries(CUSTOMER_BY_PLATE).map(([plate, cust]) => [plate, cust]),
+    [""],
+    ["Contoh:"],
+    [
+      "deliveryDate=2026-01-04, destination=YIMM KARAWANG PO 1, group=Yamaha Karawang",
+    ],
+  ]);
+  readme["!cols"] = [{ wch: 24 }, { wch: 40 }, { wch: 60 }];
+  XLSX.utils.book_append_sheet(wb, readme, "README");
 
   const out = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
   return out as Buffer;
@@ -157,7 +215,7 @@ export function parsePlanXlsx(ab: ArrayBuffer) {
 
     const deliveryDate = normStr(r.deliveryDate);
     const destination = normStr(r.destination);
-    const group = normStr(r.group);
+    const group = normalizeGroup(r.group);
 
     const forwardEtd = normTime(r.forwardEtd);
     const forwardEta = normTime(r.forwardEta);
@@ -170,6 +228,15 @@ export function parsePlanXlsx(ab: ArrayBuffer) {
 
     if (!destination) errors.push(`Line ${line}: destination kosong`);
     if (!group) errors.push(`Line ${line}: group kosong`);
+
+    // ✅ important: group harus match customer label supaya dashboard bisa join plan vs realtime
+    if (group && VALID_GROUPS.length && !VALID_GROUPS.includes(group)) {
+      errors.push(
+        `Line ${line}: group tidak dikenal (${group}). Gunakan salah satu: ${VALID_GROUPS.join(
+          ", "
+        )}`
+      );
+    }
 
     const timeFields: Array<[string, string]> = [
       ["forwardEtd", forwardEtd],
