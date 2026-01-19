@@ -96,7 +96,7 @@ function fmtJakartaTimeFromSec(sec?: number | null) {
   }).format(new Date(ms));
 }
 
-// ✅ bikin tolerant list payload
+// tolerant list payload
 function pickTrackers(list: any): any[] {
   const d = list?.data;
   if (Array.isArray(d)) return d;
@@ -106,7 +106,7 @@ function pickTrackers(list: any): any[] {
   return [];
 }
 
-// ✅ flatten segments lebih toleran
+// flatten segments tolerant
 function flattenSegments(segments: any): any[] {
   if (!Array.isArray(segments)) return [];
   const out: any[] = [];
@@ -115,17 +115,121 @@ function flattenSegments(segments: any): any[] {
       out.push(...seg);
       continue;
     }
-    // kadang bentuknya { points: [...] }
     if (seg && Array.isArray((seg as any).points)) {
       out.push(...(seg as any).points);
       continue;
     }
-    // kadang bentuknya { segment: [...] }
     if (seg && Array.isArray((seg as any).segment)) {
       out.push(...(seg as any).segment);
       continue;
     }
   }
+  return out;
+}
+
+function pickStopAddress(r: any): string | null {
+  const candidates = [
+    r?.name,
+    r?.address,
+    r?.location,
+    r?.poi,
+    r?.addr,
+    r?.display_name,
+  ];
+  for (const c of candidates) {
+    const s = typeof c === "string" ? c.trim() : "";
+    if (s) return s;
+  }
+  return null;
+}
+
+// cari point setelah waktu tertentu (buat infer end)
+function findFirstPointAfter(
+  ptsByTime: Array<LatLngT & { t: number }>,
+  afterSec: number,
+) {
+  // simple scan (maxPoints umumnya <= 2500 masih aman)
+  for (const p of ptsByTime) {
+    if (p.t > afterSec) return p;
+  }
+  return null;
+}
+
+function findFirstMovingAfter(
+  ptsByTime: Array<LatLngT & { t: number; speed?: number | null }>,
+  afterSec: number,
+  minSpeedKmh: number,
+) {
+  for (const p of ptsByTime) {
+    if (p.t <= afterSec) continue;
+    const sp = typeof p.speed === "number" ? p.speed : null;
+    if (sp != null && sp > minSpeedKmh) return p;
+  }
+  return null;
+}
+
+function deriveStopsFromPoints(
+  ptsByTime: Array<LatLngT & { t: number; speed?: number | null }>,
+) {
+  const STOP_SPEED_KMH = 1.5;
+  const MIN_STOP_SEC = 180;
+  const out: any[] = [];
+  let inStop = false;
+  let startIdx = 0;
+  let startSec = 0;
+
+  const pushStopSegment = (endIdx: number, endSec: number) => {
+    if (endSec <= startSec) return;
+    if (endSec - startSec < MIN_STOP_SEC) return;
+    let sumLat = 0;
+    let sumLng = 0;
+    let count = 0;
+    for (let i = startIdx; i <= endIdx; i++) {
+      sumLat += ptsByTime[i].lat;
+      sumLng += ptsByTime[i].lng;
+      count += 1;
+    }
+    const lat = count ? sumLat / count : ptsByTime[startIdx].lat;
+    const lng = count ? sumLng / count : ptsByTime[startIdx].lng;
+    out.push({
+      stopNo: out.length + 1,
+      lat,
+      lng,
+      startSec,
+      endSec,
+      startTime: startSec,
+      endTime: endSec,
+      durationSec: endSec - startSec,
+      speed: 0,
+      distance: 0,
+      address: null,
+    });
+  };
+
+  for (let i = 0; i < ptsByTime.length; i++) {
+    const p = ptsByTime[i];
+    const sp = typeof p.speed === "number" ? p.speed : null;
+    const isStop = sp != null && sp <= STOP_SPEED_KMH;
+    if (isStop && !inStop) {
+      inStop = true;
+      startIdx = i;
+      startSec = p.t;
+      continue;
+    }
+    if (!isStop && inStop) {
+      const endIdx = Math.max(startIdx, i - 1);
+      const endSec = ptsByTime[endIdx].t;
+      pushStopSegment(endIdx, endSec);
+      inStop = false;
+    }
+  }
+
+  if (inStop && ptsByTime.length) {
+    const endIdx = ptsByTime.length - 1;
+    const endSec = ptsByTime[endIdx].t;
+    pushStopSegment(endIdx, endSec);
+  }
+
   return out;
 }
 
@@ -192,7 +296,7 @@ export async function GET(req: Request) {
       return [{ lat, lng, t: t ?? null, speed: speed ?? null }];
     });
 
-    // sort by time (best-effort)
+    // sort by time
     try {
       points.sort((a: any, b: any) => {
         const an = Number(a.t);
@@ -212,8 +316,12 @@ export async function GET(req: Request) {
       points = sampled;
     }
 
-    // 5) stops
-    const stops = stopping
+    const ptsByTime = points.filter(
+      (p): p is LatLngT & { t: number } => typeof p.t === "number",
+    );
+
+    // 5) stops (durasi & address)
+    const mappedStops = stopping
       .map((r: any, idx: number) => {
         const lat0 = toNum(r?.latitude);
         const lng0 = toNum(r?.longitude);
@@ -224,21 +332,61 @@ export async function GET(req: Request) {
         const start = toNum(r?.start_time ?? r?.location_time ?? null);
         const end = toNum(r?.start_driving_time ?? null);
 
+        // infer end: cari point pertama setelah start
         let inferredEnd: number | null = null;
-        if (!end && start && points.length) {
-          const after = points.find(
-            (p) => typeof p.t === "number" && (p.t as number) > start,
-          );
-          inferredEnd = (after?.t as number) ?? null;
+        if (!end && typeof start === "number" && ptsByTime.length) {
+          const after = findFirstPointAfter(ptsByTime, start);
+          inferredEnd = typeof after?.t === "number" ? after.t : null;
         }
 
-        const endSec2 = end ?? inferredEnd;
+        // ✅ final end:
+        // - end (gps) -> inferredEnd -> last point -> end of day
+        let endSec2 =
+          end ??
+          inferredEnd ??
+          (ptsByTime.length
+            ? (ptsByTime[ptsByTime.length - 1].t as number)
+            : null) ??
+          endSec;
+
         const startSec2 = start ?? null;
 
-        const durationSec =
+        const MIN_STOP_SEC = 180;
+        const STOP_SPEED_KMH = 1.5;
+
+        if (
+          startSec2 != null &&
+          endSec2 != null &&
+          endSec2 <= startSec2
+        ) {
+          const nextPoint =
+            typeof startSec2 === "number"
+              ? findFirstPointAfter(ptsByTime, startSec2)
+              : null;
+          const nextT = typeof nextPoint?.t === "number" ? nextPoint.t : null;
+          endSec2 = nextT ?? inferredEnd ?? startSec2;
+        }
+
+        let durationSec =
           startSec2 != null && endSec2 != null && endSec2 >= startSec2
             ? endSec2 - startSec2
             : null;
+
+        if (startSec2 != null && (!durationSec || durationSec < MIN_STOP_SEC)) {
+          const moving = findFirstMovingAfter(
+            ptsByTime,
+            startSec2,
+            STOP_SPEED_KMH,
+          );
+          const movingT =
+            typeof moving?.t === "number" ? moving.t : inferredEnd;
+          if (movingT != null && movingT > startSec2) {
+            endSec2 = movingT;
+            durationSec = endSec2 - startSec2;
+          }
+        }
+
+        const address = pickStopAddress(r);
 
         return {
           stopNo: idx + 1,
@@ -251,14 +399,20 @@ export async function GET(req: Request) {
           durationSec,
           speed: toNum(r?.speed) ?? 0,
           distance: toNum(r?.distance) ?? null,
+          address, // ✅ dari gps kalau ada
         };
       })
       .filter(Boolean) as any[];
 
-    // 6) timeline
-    const ptsByTime = points.filter(
-      (p): p is LatLngT & { t: number } => typeof p.t === "number",
+    const hasUsableStop = mappedStops.some(
+      (s) => typeof s?.startSec === "number",
     );
+
+    const stops = hasUsableStop
+      ? mappedStops
+      : deriveStopsFromPoints(ptsByTime);
+
+    // 6) timeline DRIVE/STOP
     const timeline: any[] = [];
 
     const pushDrive = (fromSec: number | null, toSec: number | null) => {
@@ -290,12 +444,10 @@ export async function GET(req: Request) {
         startSec: fromSec,
         endSec: toSec,
         durationSec:
-          (typeof s.durationSec === "number"
-            ? s.durationSec
-            : toSec - fromSec) || null,
+          typeof s.durationSec === "number" ? s.durationSec : toSec - fromSec,
         startLabel: fmtJakartaTimeFromSec(fromSec),
         endLabel: fmtJakartaTimeFromSec(toSec),
-        address: null,
+        address: s.address ?? null, // ✅ langsung isi kalau gps ada
       });
     };
 
@@ -306,11 +458,12 @@ export async function GET(req: Request) {
     const tripStart =
       ptsByTime.length && typeof ptsByTime[0].t === "number"
         ? ptsByTime[0].t
-        : startSec ?? null;
+        : (startSec ?? null);
+
     const tripEnd =
       ptsByTime.length && typeof ptsByTime[ptsByTime.length - 1].t === "number"
         ? ptsByTime[ptsByTime.length - 1].t
-        : endSec ?? null;
+        : (endSec ?? null);
 
     if (tripStart != null && tripEnd != null) {
       let cursor = tripStart;

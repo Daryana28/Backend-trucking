@@ -46,31 +46,41 @@ export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
     const q = String(url.searchParams.get("sn") ?? "").trim();
+
+    // ✅ Mode 1 (lama): minutes
     const minutes = clampInt(url.searchParams.get("minutes"), 180, 10, 24 * 60);
 
+    // ✅ Mode 2 (baru): startSec & endSec untuk Trip Replay range
+    const startSecQ = toNum(url.searchParams.get("startSec"));
+    const endSecQ = toNum(url.searchParams.get("endSec"));
+
     if (!q) {
-      return NextResponse.json({ ok: false, error: "sn is required" }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "sn is required" },
+        { status: 400 },
+      );
     }
 
     const key = normKey(q);
 
-    // 1) Try list tracker (best effort). Kalau error / upstream down, kita fallback ke SN langsung.
+    // 1) Try list tracker (best effort). Kalau error / upstream down, fallback ke SN langsung.
     let trackers: any[] = [];
     let listStatus: number | null = null;
     let listMessage: string | null = null;
 
     try {
       const list = await accugpsListTrackers();
-      listStatus = typeof list?.status === "number" ? list.status : Number(list?.status ?? NaN);
+      listStatus =
+        typeof list?.status === "number"
+          ? list.status
+          : Number(list?.status ?? NaN);
       listMessage = typeof list?.message === "string" ? list.message : null;
 
       // kalau status 200, ambil trackers
       if (!Number.isFinite(listStatus) || listStatus === 200) {
         trackers = pickTrackers(list);
       }
-      // kalau status selain 200, tetap fallback (jangan langsung 503)
     } catch (e) {
-      // ignore, fallback to SN query
       trackers = [];
     }
 
@@ -107,13 +117,38 @@ export async function GET(req: Request) {
 
     // 2) range epoch seconds
     const nowSec = Math.floor(Date.now() / 1000);
-    const startSec = nowSec - minutes * 60;
+
+    // ✅ kalau startSec/endSec dikasih (Trip replay), pakai itu.
+    // fallback ke mode minutes.
+    let startSec = nowSec - minutes * 60;
+    let endSec = nowSec;
+
+    if (
+      typeof startSecQ === "number" &&
+      Number.isFinite(startSecQ) &&
+      typeof endSecQ === "number" &&
+      Number.isFinite(endSecQ)
+    ) {
+      // safety clamp: maksimal 7 hari biar ga berat
+      const maxSpan = 7 * 24 * 60 * 60;
+      const a = Math.max(0, Math.floor(startSecQ));
+      const b = Math.max(0, Math.floor(endSecQ));
+      const lo = Math.min(a, b);
+      const hi = Math.max(a, b);
+      endSec = hi;
+      startSec =
+        Math.max(0, hi - maxSpan) > lo ? Math.max(0, hi - maxSpan) : lo;
+    }
 
     // 3) call TRACK endpoint (polyline/history)
-    const track = await accugpsTrackerTrackBySn(trackerSn, startSec, nowSec);
+    const track = await accugpsTrackerTrackBySn(trackerSn, startSec, endSec);
 
-    const segments = Array.isArray(track?.data?.segments) ? track.data.segments : [];
-    const stopping = Array.isArray(track?.data?.stopping_points) ? track.data.stopping_points : [];
+    const segments = Array.isArray(track?.data?.segments)
+      ? track.data.segments
+      : [];
+    const stopping = Array.isArray(track?.data?.stopping_points)
+      ? track.data.stopping_points
+      : [];
 
     // 4) flatten segments -> points
     const points = segments
@@ -130,9 +165,11 @@ export async function GET(req: Request) {
 
         return { lat, lng, t, speed: speed ?? null };
       })
-      .filter((x: any) => x && typeof x.lat === "number" && typeof x.lng === "number");
+      .filter(
+        (x: any) => x && typeof x.lat === "number" && typeof x.lng === "number",
+      );
 
-    // 5) stopping points -> stops (durasi)
+    // 5) stopping points -> stops (✅ durasi akurat: start_driving_time - start_time)
     const stops = stopping
       .map((r: any, idx: number) => {
         const lat0 = toNum(r?.latitude);
@@ -144,26 +181,35 @@ export async function GET(req: Request) {
         const start = toNum(r?.start_time ?? r?.location_time ?? null);
         const end = toNum(r?.start_driving_time ?? null);
 
-        let inferredEnd: number | null = null;
-        if (!end && start && points.length) {
-          const after = points.find((p: any) => typeof p.t === "number" && p.t > start);
-          inferredEnd = after?.t ?? null;
-        }
+        const name = String(r?.name ?? "").trim() || null;
 
-        const endSec = end ?? inferredEnd;
-        const startSec2 = start ?? null;
-        const durationSec =
-          startSec2 != null && endSec != null && endSec >= startSec2 ? endSec - startSec2 : null;
+        // ✅ durasi utama dari API
+        let durationSec: number | null =
+          start != null && end != null && end >= start ? end - start : null;
+
+        // fallback (kalau end kosong): cari point pertama setelah start
+        if (durationSec == null && start != null && points.length) {
+          const after = points.find(
+            (p: any) => typeof p.t === "number" && p.t > start,
+          );
+          const inferredEnd = typeof after?.t === "number" ? after.t : null;
+          if (inferredEnd != null && inferredEnd >= start) {
+            durationSec = inferredEnd - start;
+          }
+        }
 
         return {
           stopNo: idx + 1,
           lat,
           lng,
-          startSec: startSec2,
-          endSec,
-          startTime: startSec2,
-          endTime: endSec,
+
+          // ini tetap biar RealtimeMap kamu kompatibel
+          startTime: start,
+          endTime: end ?? null,
           durationSec,
+
+          // tambahan info
+          name, // address dari AccuGPS (kadang kosong)
           speed: toNum(r?.speed) ?? 0,
           distance: toNum(r?.distance) ?? null,
         };
@@ -185,11 +231,18 @@ export async function GET(req: Request) {
       query: q,
       sn: trackerSn,
       alias: trackerAlias,
+
+      // mode info
       minutes,
       startSec,
-      endSec: nowSec,
-      // info upstream (buat debug kalau butuh)
-      upstream: { status: listStatus, message: listMessage, trackersCount: trackers.length },
+      endSec,
+
+      upstream: {
+        status: listStatus,
+        message: listMessage,
+        trackersCount: trackers.length,
+      },
+
       // data
       status: track?.status ?? 200,
       message: track?.message ?? "",
@@ -197,9 +250,13 @@ export async function GET(req: Request) {
       points,
       stopsCount: stops.length,
       stops,
+      total: track?.data?.total ?? null,
     });
   } catch (e) {
     console.error("GET /api/gps/history error:", e);
-    return NextResponse.json({ ok: false, error: "Failed to load history" }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: "Failed to load history" },
+      { status: 500 },
+    );
   }
 }

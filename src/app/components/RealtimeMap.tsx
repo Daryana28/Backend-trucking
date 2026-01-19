@@ -58,15 +58,31 @@ type HistoryPoint = {
   t?: number | string | null;
   speed?: number | null;
 };
+
 type HistoryStop = {
   lat: number;
   lng: number;
   t?: number | string | null;
   speed?: number | null;
   distance?: number | null;
+
+  // beberapa endpoint kamu pakai ini
   startTime?: number | null;
   endTime?: number | null;
   durationSec?: number | null;
+
+  // beberapa bentuk lain (fallback)
+  startSec?: number | null;
+  endSec?: number | null;
+
+  // field accugps asli (umum)
+  start_time?: number | null;
+  start_driving_time?: number | null;
+
+  // alamat dari GPS (kalau ada)
+  name?: string | null;
+  // alamat dari timeline API (kalau ada)
+  address?: string | null;
 };
 
 type HistoryBySn = Record<
@@ -197,21 +213,13 @@ function fitBoundsSafe(map: any, pts: LatLng[]) {
   } catch {}
 }
 
-function fmtDuration(sec?: number | null) {
+function fmtDurationMinutesFromSec(sec?: number | null) {
   if (sec == null) return "-";
   const n = Number(sec);
   if (!Number.isFinite(n) || n < 0) return "-";
-
-  // backend kita pakai detik
   const s = Math.floor(n);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const ss = s % 60;
-
-  // gaya seperti AccuGPS: "5min", "1h18min"
-  if (h > 0) return `${h}h${m}min`;
-  if (m > 0) return `${m}min`;
-  return `${ss}s`;
+  const m = Math.floor(s / 60);
+  return `${m} menit`;
 }
 
 function fmtTimeWib(t?: number | string | null) {
@@ -230,6 +238,27 @@ function fmtTimeWib(t?: number | string | null) {
       hour: "2-digit",
       minute: "2-digit",
       second: "2-digit",
+    }).format(new Date(ms));
+  } catch {
+    return new Date(ms).toLocaleTimeString();
+  }
+}
+
+function fmtTimeWibNoSec(t?: number | string | null) {
+  if (t == null) return "-";
+  let ms: number | null = null;
+  if (typeof t === "number" && Number.isFinite(t)) {
+    ms = t > 10_000_000_000 ? t : t * 1000;
+  } else if (typeof t === "string") {
+    const p = Date.parse(t);
+    ms = Number.isFinite(p) ? p : null;
+  }
+  if (ms == null) return String(t);
+  try {
+    return new Intl.DateTimeFormat("id-ID", {
+      timeZone: "Asia/Jakarta",
+      hour: "2-digit",
+      minute: "2-digit",
     }).format(new Date(ms));
   } catch {
     return new Date(ms).toLocaleTimeString();
@@ -274,6 +303,22 @@ function ymdJakartaClient(d = new Date()) {
   }).formatToParts(d);
   const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
   return `${get("year")}-${get("month")}-${get("day")}`; // YYYY-MM-DD
+}
+
+function ymdJakartaClientOffsetDays(offset: number) {
+  const d = new Date();
+  d.setDate(d.getDate() + offset);
+  return ymdJakartaClient(d);
+}
+
+function toDateTimeInput(ymd: string, hh: string, mm: string) {
+  return `${ymd}T${hh}:${mm}`;
+}
+
+function parseJakartaLocalToSec(date: string, time: string): number | null {
+  if (!date || !time) return null;
+  const ms = Date.parse(`${date}T${time}:00+07:00`);
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
 }
 
 type RealtimeMapProps = {
@@ -327,7 +372,6 @@ const MarkerAny = Marker as unknown as any;
 const TooltipAny = Tooltip as unknown as any;
 const PolylineAny = Polyline as unknown as any;
 const CircleMarkerAny = CircleMarker as unknown as any;
-
 const PopupAny = Popup as unknown as any;
 
 // Helper icon builders for stop numbers, start, and end
@@ -385,6 +429,70 @@ function makeEndIcon() {
 
 const MAP_CACHE_KEY = "realtime-map-cache-v1";
 
+// ===== helpers: stop duration & time extraction (robust) =====
+function normEpochSecMaybe(v: number) {
+  return v > 10_000_000_000 ? Math.floor(v / 1000) : Math.floor(v);
+}
+
+function getStopStartSec(s: any): number | null {
+  const v =
+    toNum(s?.start_time) ??
+    toNum(s?.startSec) ??
+    toNum(s?.startTime) ??
+    toNum(s?.t) ??
+    null;
+  if (v == null) return null;
+  return normEpochSecMaybe(v);
+}
+
+function getStopEndSec(s: any): number | null {
+  const v =
+    toNum(s?.start_driving_time) ??
+    toNum(s?.endSec) ??
+    toNum(s?.endTime) ??
+    null;
+  if (v == null) return null;
+  return normEpochSecMaybe(v);
+}
+
+function getStopDurationSec(s: any): number {
+  const direct = toNum(s?.durationSec);
+  if (direct != null && direct > 0) return Math.max(0, Math.floor(direct));
+
+  // accugps: start_time & start_driving_time
+  const a = toNum(s?.start_time);
+  const b = toNum(s?.start_driving_time);
+  if (a != null && b != null) {
+    const as = normEpochSecMaybe(a);
+    const bs = normEpochSecMaybe(b);
+    return Math.max(0, bs - as);
+  }
+
+  // fallback dari start/end yang lain
+  const start = getStopStartSec(s);
+  const end = getStopEndSec(s);
+  if (start != null && end != null) return Math.max(0, end - start);
+
+  return 0;
+}
+
+function pickTripReplayStops(data: any): any[] {
+  if (!data) return [];
+  const tl = Array.isArray(data?.timeline) ? data.timeline : [];
+  const hasStop = tl.some((x: any) => x?.type === "STOP");
+  if (hasStop) return tl.filter((x: any) => x?.type === "STOP");
+  const stops0 = Array.isArray(data?.stops) ? data.stops : [];
+  return stops0;
+}
+
+function getStopNameFromGps(s: any): string {
+  const n1 = String(s?.name ?? "").trim();
+  if (n1) return n1;
+  const n2 = String(s?.address ?? "").trim();
+  if (n2) return n2;
+  return "";
+}
+
 export default function RealtimeMap({
   sidebarOpen,
   drivers: driversProp,
@@ -416,8 +524,37 @@ export default function RealtimeMap({
   >({});
   const inFlightAddrRef = useRef<Record<string, boolean>>({});
 
+  const [driverAddrBySn, setDriverAddrBySn] = useState<
+    Record<string, { name: string; coordKey: string; fetchedAt: number }>
+  >({});
+  const inFlightDriverAddrRef = useRef<Record<string, boolean>>({});
+
   const [destFilterInternal, setDestFilterInternal] = useState<string>("ALL");
   const [mapStyle, setMapStyle] = useState<"street" | "satellite">("street");
+
+  // Trip replay UI
+  const [tripReplayOpen, setTripReplayOpen] = useState(false);
+  const [tripReplaySn, setTripReplaySn] = useState<string | null>(null);
+  const [tripReplayDate, setTripReplayDate] = useState<string>(() =>
+    ymdJakartaClient(),
+  );
+  const [tripReplayFromDate, setTripReplayFromDate] = useState<string>(() =>
+    ymdJakartaClient(),
+  );
+  const [tripReplayFromTime, setTripReplayFromTime] = useState<string>("00:00");
+  const [tripReplayToDate, setTripReplayToDate] = useState<string>(() =>
+    ymdJakartaClient(),
+  );
+  const [tripReplayToTime, setTripReplayToTime] = useState<string>("23:59");
+  const [tripReplayLoading, setTripReplayLoading] = useState(false);
+  const [tripReplayData, setTripReplayData] = useState<any | null>(null);
+  const [tripReplayErr, setTripReplayErr] = useState<string | null>(null);
+  const [tripReplayQuery, setTripReplayQuery] = useState("");
+  const [tripReplayTypeFilter, setTripReplayTypeFilter] = useState<
+    "ALL" | "DRIVE" | "STOP"
+  >("ALL");
+
+  const [tripReplayRunKey, setTripReplayRunKey] = useState(0);
 
   const lastTelemetryRef = useRef<
     Record<string, { p?: LatLng; tMs?: number; speedKmh?: number }>
@@ -443,6 +580,31 @@ export default function RealtimeMap({
     else setDestFilterInternal(v);
   };
 
+  const visibleDrivers = useMemo(() => {
+    const base = drivers.filter((d) => {
+      if (d.lat == null || d.lng == null) return false;
+      if (d.isFinished === true) return false;
+      return true;
+    });
+
+    if (effectiveDestFilter === "ALL") return base;
+
+    return base.filter(
+      (d) => getCustomerLabel(d.plate) === effectiveDestFilter,
+    );
+  }, [drivers, effectiveDestFilter]);
+
+  const trackerOptions = useMemo(() => {
+    // gunakan semua driver yang terlihat agar mudah dipilih
+    return visibleDrivers
+      .map((d) => ({
+        sn: String(d.driverId ?? d.id ?? "").trim(),
+        label: cleanPlate(d.plate) || String(d.driverId ?? d.id ?? "-").trim(),
+      }))
+      .filter((x) => x.sn)
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [visibleDrivers]);
+
   const toggleSelect = useCallback((sn: string) => {
     setSelectedSn((prev) => {
       const next = prev === sn ? null : sn;
@@ -451,6 +613,43 @@ export default function RealtimeMap({
     });
   }, []);
 
+  const openTripReplay = useCallback((sn: string) => {
+    setTripReplaySn(sn);
+    const ymd = ymdJakartaClient();
+    setTripReplayDate(ymd);
+    setTripReplayFromDate(ymd);
+    setTripReplayFromTime("00:00");
+    setTripReplayToDate(ymd);
+    setTripReplayToTime("23:59");
+    setTripReplayQuery("");
+    setTripReplayTypeFilter("ALL");
+    setTripReplayOpen(true);
+    setTripReplayRunKey((k) => k + 1);
+  }, []);
+
+  const closeTripReplay = useCallback(() => {
+    setTripReplayOpen(false);
+    setTripReplayErr(null);
+  }, []);
+
+  const fmtKm = (m?: number | null) => {
+    const n = typeof m === "number" && Number.isFinite(m) ? m : 0;
+    const km = n / 1000;
+    return `${km.toFixed(1)} km`;
+  };
+
+  const fmtHm = (sec?: number | null) => {
+    const n =
+      typeof sec === "number" && Number.isFinite(sec)
+        ? Math.max(0, Math.floor(sec))
+        : 0;
+    const h = Math.floor(n / 3600);
+    const m = Math.floor((n % 3600) / 60);
+    if (h <= 0) return `${m} min`;
+    return `${h}h ${m}min`;
+  };
+
+  // ✅ fetch address via API server (cached) instead of direct Nominatim client
   const fetchStopAddress = useCallback(
     async (lat: number, lng: number) => {
       const k = coordKey(lat, lng);
@@ -461,12 +660,15 @@ export default function RealtimeMap({
       inFlightAddrRef.current[k] = true;
 
       try {
-        const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(
-          String(lat),
-        )}&lon=${encodeURIComponent(String(lng))}`;
-        const res = await fetch(url, { cache: "no-store" });
+        const res = await fetch(
+          `/api/geocode/reverse?lat=${encodeURIComponent(
+            String(lat),
+          )}&lng=${encodeURIComponent(String(lng))}`,
+          { cache: "no-store" },
+        );
         const j = await res.json().catch(() => null);
-        const name = String(j?.display_name ?? "").trim();
+        const name = String(j?.displayName ?? "").trim();
+
         if (name) {
           setStopAddrByKey((prev) => ({
             ...prev,
@@ -482,6 +684,49 @@ export default function RealtimeMap({
       }
     },
     [stopAddrByKey],
+  );
+
+  const fetchDriverAddress = useCallback(
+    async (sn: string, lat?: number | null, lng?: number | null) => {
+      if (!sn || lat == null || lng == null) return "";
+      const ck = coordKey(lat, lng);
+      const cached = driverAddrBySn[sn];
+      const now = Date.now();
+      if (
+        cached &&
+        cached.coordKey === ck &&
+        cached.name &&
+        now - cached.fetchedAt < 6 * 60_000
+      ) {
+        return cached.name;
+      }
+      if (inFlightDriverAddrRef.current[sn]) return cached?.name ?? "";
+      inFlightDriverAddrRef.current[sn] = true;
+
+      try {
+        const res = await fetch(
+          `/api/geocode/reverse?lat=${encodeURIComponent(
+            String(lat),
+          )}&lng=${encodeURIComponent(String(lng))}`,
+          { cache: "no-store" },
+        );
+        const j = await res.json().catch(() => null);
+        const name = String(j?.displayName ?? "").trim();
+        if (name) {
+          setDriverAddrBySn((prev) => ({
+            ...prev,
+            [sn]: { name, coordKey: ck, fetchedAt: Date.now() },
+          }));
+          return name;
+        }
+        return "";
+      } catch {
+        return "";
+      } finally {
+        inFlightDriverAddrRef.current[sn] = false;
+      }
+    },
+    [driverAddrBySn],
   );
 
   const isSelected = useCallback(
@@ -687,20 +932,6 @@ export default function RealtimeMap({
     } catch {}
   }, [drivers, paths, driversProp]);
 
-  const visibleDrivers = useMemo(() => {
-    const base = drivers.filter((d) => {
-      if (d.lat == null || d.lng == null) return false;
-      if (d.isFinished === true) return false;
-      return true;
-    });
-
-    if (effectiveDestFilter === "ALL") return base;
-
-    return base.filter(
-      (d) => getCustomerLabel(d.plate) === effectiveDestFilter,
-    );
-  }, [drivers, effectiveDestFilter]);
-
   const defaultCenter =
     visibleDrivers.length > 0 &&
     visibleDrivers[0].lat != null &&
@@ -746,6 +977,11 @@ export default function RealtimeMap({
     const t = window.setTimeout(() => invalidate(), 0);
     return () => window.clearTimeout(t);
   }, [effectiveDestFilter]);
+
+  useEffect(() => {
+    if (!tripReplayOpen) return;
+    if (tripReplayFromDate) setTripReplayDate(tripReplayFromDate);
+  }, [tripReplayOpen, tripReplayFromDate]);
 
   // ✅ FETCH DAILY TIMELINE on demand (selectedSn changes)
   useEffect(() => {
@@ -795,9 +1031,13 @@ export default function RealtimeMap({
         const pts0: HistoryPoint[] = Array.isArray(json?.points)
           ? json.points
           : [];
-        const stops0: HistoryStop[] = Array.isArray(json?.stops)
-          ? json.stops
-          : [];
+
+        // ambil STOP dari timeline supaya sudah ada address & durationSec final
+        const stops0: HistoryStop[] = Array.isArray(json?.timeline)
+          ? json.timeline.filter((x: any) => x?.type === "STOP")
+          : Array.isArray(json?.stops)
+            ? json.stops
+            : [];
 
         setHistoryBySn((prev) => ({
           ...prev,
@@ -838,6 +1078,124 @@ export default function RealtimeMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSn]);
 
+  // ✅ Prefetch address untuk stop (pakai name/address dari GPS dulu, kalau kosong baru reverse)
+  useEffect(() => {
+    if (!selectedSn) return;
+
+    const todayYmd = ymdJakartaClient();
+    const cacheKey = `${selectedSn}::${todayYmd}`;
+    const hist = historyBySn[cacheKey];
+    const stops = hist?.stops ?? [];
+    if (!Array.isArray(stops) || stops.length === 0) return;
+
+    const maxPrefetch = 30;
+
+    (async () => {
+      for (let i = 0; i < Math.min(stops.length, maxPrefetch); i++) {
+        const s = stops[i] as any;
+        if (!s) continue;
+        const ck = coordKey(s.lat, s.lng);
+
+        // kalau stop punya name/address dari GPS/timeline, simpan langsung
+        const fromGps = getStopNameFromGps(s);
+        if (fromGps) {
+          if (!stopAddrByKey[ck]?.name) {
+            setStopAddrByKey((prev) => ({
+              ...prev,
+              [ck]: { name: fromGps, fetchedAt: Date.now() },
+            }));
+          }
+          continue;
+        }
+
+        // kalau belum ada, fetch reverse
+        const cached = stopAddrByKey[ck]?.name ?? "";
+        if (!cached) {
+          await fetchStopAddress(s.lat, s.lng);
+        }
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSn, historyBySn]);
+
+  // ✅ Load trip replay data (by date)
+  useEffect(() => {
+    if (!tripReplayOpen || !tripReplaySn) return;
+
+    let cancelled = false;
+    const run = async () => {
+      setTripReplayLoading(true);
+      setTripReplayErr(null);
+      try {
+        const res = await fetch(
+          `/api/gps/timeline?sn=${encodeURIComponent(tripReplaySn)}&date=${encodeURIComponent(tripReplayDate)}&maxPoints=${HISTORY_MAX_DRAW_POINTS}`,
+          { cache: "no-store" },
+        );
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const json = await res.json();
+        if (cancelled) return;
+        if (!json?.ok) {
+          setTripReplayData(null);
+          setTripReplayErr(String(json?.error ?? "Gagal memuat trip replay"));
+          return;
+        }
+        setTripReplayData(json);
+
+        // also update map selection + path/stops cache for the chosen date
+        setSelectedSn(tripReplaySn);
+        const cacheKey = `${tripReplaySn}::${tripReplayDate}`;
+        const pts0: HistoryPoint[] = Array.isArray(json?.points)
+          ? json.points
+          : [];
+        const stops0: HistoryStop[] = Array.isArray(json?.timeline)
+          ? json.timeline.filter((x: any) => x?.type === "STOP")
+          : Array.isArray(json?.stops)
+            ? json.stops
+            : [];
+        setHistoryBySn((prev) => ({
+          ...prev,
+          [cacheKey]: {
+            points: pts0,
+            stops: stops0,
+            fetchedAt: Date.now(),
+            date: tripReplayDate,
+          },
+        }));
+
+        const rawPts: LatLng[] = pts0
+          .map((p) => ({ lat: p.lat, lng: p.lng }))
+          .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+        const cleaned = thinPathByDistance(
+          dedupeTrailing(cleanOutliers(rawPts, HISTORY_MAX_JUMP_M), 4),
+          HISTORY_MIN_SPACING_M,
+        );
+        if (cleaned.length >= 2) {
+          setMatchedHistoryPaths((prev) => ({
+            ...prev,
+            [tripReplaySn]: cleaned,
+          }));
+          fitBoundsSafe(leafletMapRef.current, cleaned);
+        }
+      } catch (e: any) {
+        if (cancelled) return;
+        setTripReplayData(null);
+        setTripReplayErr(
+          e?.message ? String(e.message) : "Gagal memuat trip replay",
+        );
+      } finally {
+        if (!cancelled) setTripReplayLoading(false);
+      }
+    };
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tripReplayOpen, tripReplaySn, tripReplayDate, tripReplayRunKey]);
+
   // ===== snappedPaths (DB history via OSRM) tetap =====
   const lastSnappedUpdatedAtRef = useRef<Record<string, string>>({});
   const inFlightSnapRef = useRef<Record<string, boolean>>({});
@@ -851,7 +1209,9 @@ export default function RealtimeMap({
 
       try {
         const hRes = await fetch(
-          `/api/driver-status/history?driverId=${encodeURIComponent(driverId)}&limit=80`,
+          `/api/driver-status/history?driverId=${encodeURIComponent(
+            driverId,
+          )}&limit=80`,
           { method: "GET" },
         );
 
@@ -980,14 +1340,52 @@ export default function RealtimeMap({
           const showDest = dest !== "-" && dest !== customer;
           const showEtdEta = etd !== "-" || eta !== "-";
 
-          const isMoving = (d.speed ?? 0) > 0;
+          const isMoving = (d.speed ?? 0) > 3;
           const icon = isMoving ? truckIconMoving : truckIconIdle;
 
           // ambil stops dari cache harian (kalau sudah ada)
-          const todayYmd = ymdJakartaClient();
-          const cacheKey = `${snKey}::${todayYmd}`;
+          // NOTE: kalau sedang Trip Replay untuk SN ini, pakai tanggal Trip Replay
+          const activeYmd =
+            tripReplayOpen && tripReplaySn === snKey
+              ? tripReplayDate
+              : ymdJakartaClient();
+          const cacheKey = `${snKey}::${activeYmd}`;
           const hist = historyBySn[cacheKey];
-          const stops = selected && hist?.stops?.length ? hist.stops : [];
+          const rangeStartSec = parseJakartaLocalToSec(
+            tripReplayFromDate,
+            tripReplayFromTime,
+          );
+          const rangeEndSec = parseJakartaLocalToSec(
+            tripReplayToDate,
+            tripReplayToTime,
+          );
+
+          const tripReplayStops =
+            tripReplayOpen && tripReplaySn === snKey
+              ? pickTripReplayStops(tripReplayData).filter((s: any) => {
+                  const startSec = getStopStartSec(s);
+                  if (startSec == null) return false;
+                  if (rangeStartSec != null && startSec < rangeStartSec) {
+                    return false;
+                  }
+                  if (rangeEndSec != null && startSec > rangeEndSec) {
+                    return false;
+                  }
+                  return true;
+                })
+              : [];
+
+          const baseStops = selected && hist?.stops?.length ? hist.stops : [];
+
+          const stops =
+            tripReplayStops.length > 0 ? tripReplayStops : baseStops;
+
+          const orderedStops = stops
+            .slice()
+            .sort(
+              (a: any, b: any) =>
+                (getStopStartSec(a) ?? 0) - (getStopStartSec(b) ?? 0),
+            );
 
           return (
             <Fragment key={d.id}>
@@ -1052,120 +1450,178 @@ export default function RealtimeMap({
                 </>
               )}
 
-              {stops.map((s, idx) => {
+              {orderedStops.map((s: any, idx: number) => {
                 const k = `${snKey}-stop-${idx}`;
                 const ck = coordKey(s.lat, s.lng);
-                const addr = stopAddrByKey[ck]?.name ?? "";
 
-                const normEpochSec = (v: number) => {
-                  return v > 10_000_000_000
-                    ? Math.floor(v / 1000)
-                    : Math.floor(v);
-                };
+                // alamat: prioritas dari data GPS/timeline (name/address), kalau kosong pakai cache reverse
+                const addrFromGps = getStopNameFromGps(s);
+                const addrCached = stopAddrByKey[ck]?.name ?? "";
+                const addr = addrFromGps || addrCached || "";
 
-                const durationSec = (() => {
-                  if (
-                    typeof s.durationSec === "number" &&
-                    Number.isFinite(s.durationSec)
-                  ) {
-                    return s.durationSec;
-                  }
-                  if (
-                    typeof s.startTime === "number" &&
-                    Number.isFinite(s.startTime) &&
-                    typeof s.endTime === "number" &&
-                    Number.isFinite(s.endTime)
-                  ) {
-                    const a = normEpochSec(s.startTime);
-                    const b = normEpochSec(s.endTime);
-                    return Math.max(0, b - a);
-                  }
-                  return 0;
-                })();
+                const durationSec = getStopDurationSec(s);
+                const startSec = getStopStartSec(s);
+                const endSec = getStopEndSec(s);
 
                 return (
-                  <MarkerAny
-                    key={k}
-                    position={{ lat: s.lat, lng: s.lng }}
-                    icon={makeStopNumberIcon(idx + 1)}
-                    eventHandlers={{
-                      click: async (e: any) => {
-                        try {
-                          e?.originalEvent?.stopPropagation?.();
-                        } catch {}
-                        setSelectedStopKey((prev) => (prev === k ? null : k));
-                        if (!addr) {
-                          await fetchStopAddress(s.lat, s.lng);
-                        }
-                      },
-                    }}
-                  >
-                    <TooltipAny direction="top" offset={[0, -10]} opacity={1}>
-                      <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-md">
-                        <div className="text-sm font-extrabold text-slate-900">
-                          Stop #{idx + 1}
+                  <Fragment key={k}>
+                    <CircleMarkerAny
+                      center={{ lat: s.lat, lng: s.lng }}
+                      radius={4}
+                      pathOptions={{
+                        color: "#DC2626",
+                        weight: 2,
+                        fillColor: "#DC2626",
+                        fillOpacity: 1,
+                      }}
+                    />
+
+                    <MarkerAny
+                      position={{ lat: s.lat, lng: s.lng }}
+                      icon={makeStopNumberIcon(idx + 1)}
+                      eventHandlers={{
+                        click: async (e: any) => {
+                          try {
+                            e?.originalEvent?.stopPropagation?.();
+                          } catch {}
+                          setSelectedStopKey((prev) => (prev === k ? null : k));
+
+                          // kalau belum ada addr dari gps/timeline dan cache kosong -> fetch reverse
+                          if (!addrFromGps && !addrCached) {
+                            await fetchStopAddress(s.lat, s.lng);
+                          }
+                        },
+                      }}
+                    >
+                      <TooltipAny direction="top" offset={[0, -10]} opacity={1}>
+                        <div className="px-1 py-0.5">
+                          <div className="flex items-center gap-2">
+                            <span className="inline-flex items-center rounded-full bg-red-500/10 px-2 py-0.5 text-[11px] font-extrabold text-red-600">
+                              Stop #{idx + 1}
+                            </span>
+                            <span className="text-xs font-semibold text-slate-700">
+                              {fmtDurationMinutesFromSec(durationSec)}
+                            </span>
+                          </div>
+
+                          <div className="mt-1 text-[11px] font-semibold text-slate-600">
+                            {addr || "(mencari alamat...)"}
+                          </div>
                         </div>
-                        <div className="mt-0.5 text-xs font-semibold text-slate-600">
-                          Stopped:{" "}
-                          <span className="text-slate-900">
-                            {fmtDuration(durationSec)}
-                          </span>
-                        </div>
-                      </div>
-                    </TooltipAny>
+                      </TooltipAny>
 
-                    {selectedStopKey === k && (
-                      <PopupAny>
-                        <div className="min-w-[280px]">
-                          <div className="text-base font-extrabold text-slate-900">
-                            {plate}
-                          </div>
+                      {selectedStopKey === k && (
+                        <PopupAny>
+                          <div className="min-w-[280px]">
+                            <div className="text-base font-extrabold text-slate-900">
+                              {plate}
+                            </div>
 
-                          <div className="mt-1 text-sm font-semibold text-slate-700">
-                            Stopped:{" "}
-                            <span className="text-red-600">
-                              {fmtDuration(durationSec)}
-                            </span>
-                          </div>
+                            <div className="mt-1 text-sm font-semibold text-slate-700">
+                              Stopped:{" "}
+                              <span className="text-red-600">
+                                {fmtDurationMinutesFromSec(durationSec)}
+                              </span>
+                            </div>
 
-                          <div className="mt-2 text-xs font-semibold text-slate-600">
-                            Start:{" "}
-                            <span className="text-slate-900">
-                              {fmtDateTimeWib(s.startTime ?? s.t)}
-                            </span>
-                          </div>
-                          <div className="mt-1 text-xs font-semibold text-slate-600">
-                            End:{" "}
-                            <span className="text-slate-900">
-                              {fmtDateTimeWib(s.endTime ?? null)}
-                            </span>
-                          </div>
+                            <div className="mt-2 text-xs font-semibold text-slate-600">
+                              Start:{" "}
+                              <span className="text-slate-900">
+                                {fmtDateTimeWib(startSec ?? s.startTime ?? s.t)}
+                              </span>
+                            </div>
+                            <div className="mt-1 text-xs font-semibold text-slate-600">
+                              End:{" "}
+                              <span className="text-slate-900">
+                                {fmtDateTimeWib(endSec ?? s.endTime ?? null)}
+                              </span>
+                            </div>
 
-                          <div className="mt-2 text-xs font-semibold text-slate-600">
-                            Address:
-                            <div className="mt-0.5 text-xs text-slate-900 break-words">
-                              {addr || "(sedang mencari...)"}
+                            <div className="mt-2 text-xs font-semibold text-slate-600">
+                              Address:
+                              <div className="mt-0.5 text-xs text-slate-900 break-words">
+                                {addr || "(mencari alamat...)"}
+                              </div>
+                            </div>
+
+                            <div className="mt-2 text-[11px] font-semibold text-slate-500">
+                              Coord:{" "}
+                              <span className="text-slate-700">
+                                {s.lat.toFixed(5)}, {s.lng.toFixed(5)}
+                              </span>
                             </div>
                           </div>
-
-                          <div className="mt-2 text-[11px] font-semibold text-slate-500">
-                            Coord:{" "}
-                            <span className="text-slate-700">
-                              {s.lat.toFixed(5)}, {s.lng.toFixed(5)}
-                            </span>
-                          </div>
-                        </div>
-                      </PopupAny>
-                    )}
-                  </MarkerAny>
+                        </PopupAny>
+                      )}
+                    </MarkerAny>
+                  </Fragment>
                 );
               })}
 
               <MarkerAny
                 position={pos}
                 icon={icon}
-                eventHandlers={{ click: () => toggleSelect(snKey) }}
+                eventHandlers={{
+                  click: () => {
+                    fetchDriverAddress(snKey, pos.lat, pos.lng);
+                    toggleSelect(snKey);
+                  },
+                }}
               >
+                <PopupAny>
+                  <div className="min-w-[320px]">
+                    <div className="flex items-start gap-3">
+                      <div className="h-12 w-12 rounded-full bg-slate-200" />
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <div className="text-base font-extrabold text-slate-900">
+                            {plate}
+                          </div>
+                          <div
+                            className={`text-[11px] font-extrabold ${isMoving ? "text-green-600" : "text-red-600"}`}
+                          >
+                            {isMoving ? "Moving" : "Stopped"}
+                          </div>
+                        </div>
+                        <div className="mt-1 text-sm font-semibold text-slate-700">
+                          {isMoving ? "Moving" : "Stopped"}:{" "}
+                          {Math.round(d.speed ?? 0)} km/h
+                        </div>
+                        <div className="mt-1 text-xs font-semibold text-slate-600">
+                          Updated at:{" "}
+                          <span className="text-slate-900">
+                            {fmtDateTimeWib(d.updatedAt)}
+                          </span>
+                        </div>
+                        <div className="mt-1 text-xs font-semibold text-slate-600">
+                          Address:{" "}
+                          <span className="text-slate-900">
+                            {driverAddrBySn[snKey]?.coordKey ===
+                            coordKey(pos.lat, pos.lng)
+                              ? driverAddrBySn[snKey]?.name ||
+                                "(mencari alamat...)"
+                              : "(mencari alamat...)"}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          openTripReplay(snKey);
+                        }}
+                        className="rounded-full border border-slate-300 bg-white px-4 py-2 text-xs font-extrabold text-slate-900 hover:bg-slate-50"
+                        title="Trip replay"
+                      >
+                        Trip replay
+                      </button>
+                    </div>
+                  </div>
+                </PopupAny>
                 <TooltipAny
                   direction="top"
                   offset={[0, -10]}
@@ -1205,12 +1661,6 @@ export default function RealtimeMap({
                         </>
                       )}
                     </button>
-
-                    {selected && (
-                      <div className="mt-1 inline-flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] font-extrabold text-blue-700">
-                        Route ON
-                      </div>
-                    )}
 
                     <div className="mt-0.5 text-[11px] font-semibold text-slate-600">
                       Customer:{" "}
@@ -1279,6 +1729,575 @@ export default function RealtimeMap({
         </div>
       </div>
 
+      {tripReplayOpen && tripReplaySn && (
+        <div
+          className="absolute top-0 right-0 h-full w-full sm:w-[520px] bg-white border-l border-slate-200 shadow-2xl flex flex-col"
+          style={{ zIndex: 999999, pointerEvents: "auto" }}
+        >
+          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+            <div className="text-sm font-extrabold text-slate-900">
+              Trip Replay
+            </div>
+            <button
+              type="button"
+              onClick={closeTripReplay}
+              className="rounded-lg border border-slate-200 px-2 py-1 text-xs font-extrabold text-slate-700 hover:bg-slate-50"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div className="p-4 pb-6 flex-1 min-h-0 overflow-y-auto">
+            <div className="space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="flex items-center gap-3 sm:pl-4">
+                  <div className="w-20 text-sm font-semibold text-slate-700">
+                    Tracker:
+                  </div>
+                  <select
+                    value={tripReplaySn}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setTripReplaySn(v);
+                    }}
+                    className="flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-900 bg-white"
+                  >
+                    {trackerOptions.map((o) => (
+                      <option key={o.sn} value={o.sn}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <div className="text-sm font-semibold text-slate-700">
+                    From:
+                  </div>
+                  <div className="mt-2 flex gap-2">
+                    <input
+                      type="date"
+                      value={tripReplayFromDate}
+                      onChange={(e) => {
+                        setTripReplayFromDate(e.target.value);
+                      }}
+                      className="flex-1 rounded-xl border border-orange-400 px-3 py-2 text-sm font-semibold text-slate-900"
+                    />
+                    <input
+                      type="time"
+                      value={tripReplayFromTime}
+                      onChange={(e) => setTripReplayFromTime(e.target.value)}
+                      className="w-28 rounded-xl border border-orange-400 px-3 py-2 text-sm font-semibold text-slate-900"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <div className="text-sm font-semibold text-slate-700">
+                    To:
+                  </div>
+                  <div className="mt-2 flex gap-2">
+                    <input
+                      type="date"
+                      value={tripReplayToDate}
+                      onChange={(e) => setTripReplayToDate(e.target.value)}
+                      className="flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-900"
+                    />
+                    <input
+                      type="time"
+                      value={tripReplayToTime}
+                      onChange={(e) => setTripReplayToTime(e.target.value)}
+                      className="w-28 rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-900"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end">
+                <button
+                  type="button"
+                  onClick={() => setTripReplayRunKey((k) => k + 1)}
+                  className="rounded-xl bg-orange-500 px-6 py-2 text-sm font-extrabold text-white shadow hover:bg-orange-600"
+                  title="Show"
+                >
+                  Show
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4">
+              {tripReplayLoading && (
+                <div className="text-sm font-semibold text-slate-600">
+                  Loading...
+                </div>
+              )}
+              {tripReplayErr && (
+                <div className="text-sm font-semibold text-red-600">
+                  {tripReplayErr}
+                </div>
+              )}
+
+              {!tripReplayLoading && !tripReplayErr && (
+                <div className="space-y-4">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setTripReplayTypeFilter("DRIVE")}
+                        className={[
+                          "rounded-full border px-3 py-1 text-xs font-semibold",
+                          tripReplayTypeFilter === "DRIVE"
+                            ? "border-orange-200 bg-orange-50 text-orange-700"
+                            : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+                        ].join(" ")}
+                      >
+                        Traveled
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTripReplayTypeFilter("STOP")}
+                        className={[
+                          "rounded-full border px-3 py-1 text-xs font-semibold",
+                          tripReplayTypeFilter === "STOP"
+                            ? "border-orange-200 bg-orange-50 text-orange-700"
+                            : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+                        ].join(" ")}
+                      >
+                        Stop
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTripReplayTypeFilter("ALL")}
+                        className={[
+                          "rounded-full border px-3 py-1 text-xs font-semibold",
+                          tripReplayTypeFilter === "ALL"
+                            ? "border-orange-200 bg-orange-50 text-orange-700"
+                            : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+                        ].join(" ")}
+                      >
+                        All
+                      </button>
+                    </div>
+                    <div className="flex-1 min-w-[180px]">
+                      <input
+                        type="text"
+                        value={tripReplayQuery}
+                        onChange={(e) => setTripReplayQuery(e.target.value)}
+                        placeholder="Search..."
+                        className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-900 placeholder:text-slate-400"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setTripReplayQuery("")}
+                      className="h-10 rounded-xl border border-slate-200 bg-white px-4 text-xs font-extrabold text-slate-700 hover:bg-slate-50"
+                      title="Reset pencarian"
+                    >
+                      Reset
+                    </button>
+                  </div>
+                  {(() => {
+                    const tl0: any[] = Array.isArray(tripReplayData?.timeline)
+                      ? tripReplayData.timeline
+                      : [];
+                    const hasStop = tl0.some((x) => x?.type === "STOP");
+
+                    const stops0: any[] = Array.isArray(tripReplayData?.stops)
+                      ? tripReplayData.stops
+                      : [];
+
+                    const tlStops: any[] =
+                      !hasStop && stops0.length
+                        ? stops0.map((s: any, i: number) => {
+                            const startSec = getStopStartSec(s);
+                            const endSec = getStopEndSec(s);
+                            const dur = getStopDurationSec(s);
+                            const addr = getStopNameFromGps(s) || null;
+                            return {
+                              type: "STOP",
+                              stopNo: Number(s?.stopNo ?? i + 1),
+                              lat: s?.lat,
+                              lng: s?.lng,
+                              startSec: startSec,
+                              endSec: endSec,
+                              durationSec: dur,
+                              startLabel: fmtTimeWibNoSec(startSec ?? null),
+                              endLabel: fmtTimeWibNoSec(endSec ?? null),
+                              address: addr,
+                            };
+                          })
+                        : [];
+
+                    const merged = [...tl0, ...tlStops]
+                      .filter(
+                        (x) => x && (x.type === "DRIVE" || x.type === "STOP"),
+                      )
+                      .sort(
+                        (a, b) =>
+                          Number(a?.startSec ?? 0) - Number(b?.startSec ?? 0),
+                      );
+
+                    const normalized = merged.map((it, idx) => {
+                      const startSec =
+                        typeof it?.startSec === "number" ? it.startSec : null;
+                      let endSec =
+                        typeof it?.endSec === "number" ? it.endSec : null;
+                      let durationSec =
+                        typeof it?.durationSec === "number"
+                          ? it.durationSec
+                          : null;
+
+                      if (it?.type === "STOP" && startSec != null) {
+                        if (endSec == null || endSec <= startSec) {
+                          const next = merged
+                            .slice(idx + 1)
+                            .find((x) => typeof x?.startSec === "number");
+                          const nextStart =
+                            typeof next?.startSec === "number"
+                              ? next.startSec
+                              : null;
+                          if (nextStart != null && nextStart > startSec) {
+                            endSec = nextStart;
+                          } else if (
+                            typeof (tripReplayData as any)?.endSec === "number"
+                          ) {
+                            const fallbackEnd = (tripReplayData as any).endSec;
+                            if (fallbackEnd > startSec) endSec = fallbackEnd;
+                          }
+                        }
+
+                        if (endSec != null && endSec > startSec) {
+                          durationSec = endSec - startSec;
+                        }
+                      }
+
+                      const startLabel =
+                        startSec != null
+                          ? fmtTimeWibNoSec(startSec)
+                          : it?.startLabel;
+                      const endLabel =
+                        endSec != null ? fmtTimeWibNoSec(endSec) : it?.endLabel;
+
+                      return {
+                        ...it,
+                        endSec,
+                        durationSec,
+                        startLabel,
+                        endLabel,
+                      };
+                    });
+
+                    const deduped = normalized.reduce((acc: any[], it: any) => {
+                      const prev = acc[acc.length - 1];
+                      if (
+                        prev &&
+                        prev?.type === it?.type &&
+                        prev?.startLabel &&
+                        it?.startLabel &&
+                        prev.startLabel === it.startLabel
+                      ) {
+                        return acc;
+                      }
+                      if (
+                        prev &&
+                        prev?.type === it?.type &&
+                        prev?.startSec != null &&
+                        it?.startSec != null
+                      ) {
+                        const diffSec = it.startSec - prev.startSec;
+                        if (diffSec >= 0 && diffSec <= 60) {
+                          return acc;
+                        }
+                      }
+                      acc.push(it);
+                      return acc;
+                    }, []);
+
+                    const totals = deduped.reduce(
+                      (acc, it) => {
+                        if (it?.type === "DRIVE") {
+                          acc.totalDriveSec += Number(it?.durationSec ?? 0);
+                          acc.totalDistanceMeters += Number(
+                            it?.distanceMeters ?? 0,
+                          );
+                        } else if (it?.type === "STOP") {
+                          acc.totalStopSec += Number(it?.durationSec ?? 0);
+                        }
+                        return acc;
+                      },
+                      {
+                        totalDistanceMeters: 0,
+                        totalDriveSec: 0,
+                        totalStopSec: 0,
+                      },
+                    );
+
+                    // expose to JSX below
+                    if (tripReplayData) {
+                      (tripReplayData as any).__renderTimeline = deduped;
+                      (tripReplayData as any).__renderTotals = totals;
+                    }
+                    return null;
+                  })()}
+                  {(() => {
+                    const timelineItems: any[] = Array.isArray(
+                      (tripReplayData as any)?.__renderTimeline,
+                    )
+                      ? (tripReplayData as any).__renderTimeline
+                      : [];
+                    const q = tripReplayQuery.trim().toLowerCase();
+                    const rangeStartSec = parseJakartaLocalToSec(
+                      tripReplayFromDate,
+                      tripReplayFromTime,
+                    );
+                    const rangeEndSec = parseJakartaLocalToSec(
+                      tripReplayToDate,
+                      tripReplayToTime,
+                    );
+                    const timeFiltered = timelineItems.filter((it: any) => {
+                      const type = String(it?.type ?? "").toUpperCase();
+                      if (
+                        tripReplayTypeFilter !== "ALL" &&
+                        type !== tripReplayTypeFilter
+                      ) {
+                        return false;
+                      }
+
+                      const startSec =
+                        typeof it?.startSec === "number" ? it.startSec : null;
+                      const endSec =
+                        typeof it?.endSec === "number" ? it.endSec : startSec;
+
+                      if (
+                        rangeStartSec != null &&
+                        rangeEndSec != null &&
+                        startSec != null
+                      ) {
+                        if (rangeEndSec < rangeStartSec) return false;
+                        const a = startSec;
+                        const b = endSec ?? startSec;
+                        if (b < rangeStartSec || a > rangeEndSec) return false;
+                      }
+
+                      return true;
+                    });
+
+                    const filtered = timeFiltered.filter((it: any) => {
+                      if (!q) return true;
+                      const hay = [
+                        it?.type,
+                        it?.address,
+                        it?.stopNo,
+                        it?.startLabel,
+                        it?.endLabel,
+                      ]
+                        .map((v) => String(v ?? ""))
+                        .join(" ")
+                        .toLowerCase();
+                      return hay.includes(q);
+                    });
+
+                    if (!timelineItems.length) {
+                      return (
+                        <div className="text-sm font-semibold text-slate-600">
+                          Tidak ada data trip pada tanggal ini.
+                        </div>
+                      );
+                    }
+
+                    if (!filtered.length) {
+                      return (
+                        <div className="text-sm font-semibold text-slate-600">
+                          Tidak ada hasil untuk pencarian ini.
+                        </div>
+                      );
+                    }
+
+                    const startLabel = String(
+                      timeFiltered[0]?.startLabel ?? "-",
+                    );
+                    const endLabel = String(
+                      timeFiltered[timeFiltered.length - 1]?.endLabel ?? "-",
+                    );
+
+                    return (
+                      <>
+                        {/* Timeline */}
+                        <div className="rounded-2xl border border-slate-200 bg-white">
+                          <div className="px-4 py-3 border-b border-slate-200">
+                            <div className="text-sm font-extrabold text-slate-900">
+                              Trip Timeline
+                            </div>
+                            <div className="mt-1 text-[11px] font-semibold text-slate-600">
+                              Tracker:{" "}
+                              <span className="text-slate-900">
+                                {String(tripReplayData?.alias ?? tripReplaySn)}
+                              </span>
+                            </div>
+                            <div className="mt-1 text-[11px] font-semibold text-slate-600">
+                              Start:{" "}
+                              <span className="text-slate-900">
+                                {startLabel}
+                              </span>{" "}
+                              • End:{" "}
+                              <span className="text-slate-900">{endLabel}</span>
+                            </div>
+                          </div>
+
+                          <div className="p-4">
+                            <div className="space-y-4">
+                              {filtered.map((it: any, idx: number) => {
+                                const isDrive = it?.type === "DRIVE";
+                                const isStop = it?.type === "STOP";
+                                if (!isDrive && !isStop) return null;
+                                const stopIndex = isStop
+                                  ? filtered
+                                      .slice(0, idx + 1)
+                                      .filter((x) => x?.type === "STOP").length
+                                  : 0;
+
+                                // left labels
+                                const leftTitle = isDrive
+                                  ? "Departed at"
+                                  : "Stopped at";
+                                const leftTime = String(
+                                  (isDrive ? it?.startLabel : it?.startLabel) ??
+                                    "-",
+                                );
+                                const leftDate = String(tripReplayDate ?? "-");
+
+                                // visuals
+                                const dotClass = isDrive
+                                  ? "bg-green-500"
+                                  : "bg-red-500";
+
+                                const addr = String(it?.address ?? "").trim();
+
+                                return (
+                                  <div
+                                    key={`tl-${idx}`}
+                                    className="grid grid-cols-[140px_1fr] gap-3"
+                                  >
+                                    {/* Left rail */}
+                                    <div className="relative">
+                                      <div className="absolute left-[62px] top-0 bottom-0 w-px bg-slate-200" />
+
+                                      <div className="flex items-start gap-3">
+                                        <div className="w-[120px] text-right">
+                                          <div className="text-[11px] font-semibold text-slate-600">
+                                            {leftTitle}
+                                          </div>
+                                          <div className="text-sm font-extrabold text-slate-900">
+                                            {leftTime}
+                                          </div>
+                                          <div className="text-[11px] font-semibold text-slate-600">
+                                            {leftDate}
+                                          </div>
+                                        </div>
+
+                                        <div className="relative z-10 flex items-center justify-center w-10">
+                                          {isStop ? (
+                                            <div className="h-8 w-8 rounded-full bg-red-500 text-white flex items-center justify-center text-xs font-extrabold">
+                                              {stopIndex}
+                                            </div>
+                                          ) : (
+                                            <div
+                                              className={`h-8 w-8 rounded-full ${dotClass} border-4 border-white shadow`}
+                                            />
+                                          )}
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    {/* Right card */}
+                                    <div className="rounded-xl border border-slate-200 bg-white p-3">
+                                      {isDrive ? (
+                                        <>
+                                          <div className="text-sm font-extrabold text-slate-900">
+                                            Driving for:{" "}
+                                            <span className="text-orange-600">
+                                              {fmtHm(it?.durationSec)}
+                                            </span>
+                                          </div>
+                                          <div className="mt-1 text-xs font-semibold text-slate-600">
+                                            Traveled:{" "}
+                                            <span className="text-slate-900">
+                                              {fmtKm(it?.distanceMeters)}
+                                            </span>
+                                          </div>
+                                          {/* ends-at removed */}
+                                        </>
+                                      ) : (
+                                        <>
+                                          <div className="text-sm font-extrabold text-slate-900">
+                                            Stop for:{" "}
+                                            <span className="text-orange-600">
+                                              {fmtHm(it?.durationSec)}
+                                            </span>
+                                          </div>
+                                          <div className="mt-1 text-xs font-semibold text-slate-600">
+                                            Area:{" "}
+                                            <span className="text-slate-900">
+                                              {addr || "-"}
+                                            </span>
+                                          </div>
+                                          {/* ends-at removed */}
+                                        </>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Totals */}
+                        {((tripReplayData as any)?.__renderTotals ||
+                          tripReplayData?.totals) && (
+                          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                            {(() => {
+                              const t =
+                                (tripReplayData as any)?.__renderTotals ??
+                                tripReplayData.totals;
+                              return (
+                                <>
+                                  <div className="text-xs font-semibold text-slate-600">
+                                    Total Distance:{" "}
+                                    <span className="text-orange-600 font-extrabold">
+                                      {fmtKm(t.totalDistanceMeters)}
+                                    </span>
+                                  </div>
+                                  <div className="mt-2 text-xs font-semibold text-slate-600">
+                                    Total Stopped Time:{" "}
+                                    <span className="text-orange-600 font-extrabold">
+                                      {fmtHm(t.totalStopSec)}
+                                    </span>
+                                  </div>
+                                  <div className="mt-2 text-xs font-semibold text-slate-600">
+                                    Total Traveled Time:{" "}
+                                    <span className="text-orange-600 font-extrabold">
+                                      {fmtHm(t.totalDriveSec)}
+                                    </span>
+                                  </div>
+                                </>
+                              );
+                            })()}
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
