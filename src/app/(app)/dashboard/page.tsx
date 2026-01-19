@@ -4,7 +4,6 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-
 type DriverStatus = {
   id: string;
   driverId: string;
@@ -22,6 +21,7 @@ type DriverStatus = {
   etdTime?: string | null;
   etaTime?: string | null;
   isFinished?: boolean | null;
+  speed?: number | null;
 
   updatedAt: string;
 
@@ -29,17 +29,6 @@ type DriverStatus = {
   deliveryDate?: string | null;
 
   driver: { name: string; phone?: string | null };
-};
-
-type DashboardMetrics = {
-  ok: boolean;
-  today: { completedTrips: number };
-  updates24h: { total: number; byHour: { label: string; value: number }[] };
-  durationsToday: {
-    avgForwardMin: number;
-    avgReverseMin: number;
-    sampleTrips: number;
-  };
 };
 
 type HistoryRow = {
@@ -114,6 +103,63 @@ function fmtTimeHHmmss(d: Date) {
   });
 }
 
+function fmtTimeHHmm(d: Date) {
+  return d.toLocaleTimeString("id-ID", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function fmtKm(m?: number | null) {
+  const n = typeof m === "number" && Number.isFinite(m) ? m : 0;
+  return `${(n / 1000).toFixed(1)} km`;
+}
+
+function fmtHm(sec?: number | null) {
+  const n =
+    typeof sec === "number" && Number.isFinite(sec)
+      ? Math.max(0, Math.floor(sec))
+      : 0;
+  const h = Math.floor(n / 3600);
+  const m = Math.floor((n % 3600) / 60);
+  if (h <= 0) return `${m} min`;
+  return `${h}h ${m}min`;
+}
+
+function normEpochSecMaybe(v: number) {
+  return v > 10_000_000_000 ? Math.floor(v / 1000) : Math.floor(v);
+}
+
+function getStopStartSec(s: any): number | null {
+  const v = s?.startSec ?? s?.startTime ?? s?.start_time ?? null;
+  if (typeof v !== "number") return null;
+  return normEpochSecMaybe(v);
+}
+
+function getStopEndSec(s: any): number | null {
+  const v = s?.endSec ?? s?.endTime ?? s?.start_driving_time ?? null;
+  if (typeof v !== "number") return null;
+  return normEpochSecMaybe(v);
+}
+
+type TimelineCacheEntry = {
+  items: any[];
+  savedAt: number;
+  hasRelevant: boolean;
+  hasDrive: boolean;
+};
+
+function analyzeTimelineItems(items: any[]) {
+  const onlyDriveZero =
+    items.length === 1 &&
+    items[0]?.type === "DRIVE" &&
+    Number(items[0]?.distanceMeters ?? 0) === 0;
+  const hasRelevant = items.length > 0 && !onlyDriveZero;
+  const hasDrive = items.some(
+    (x: any) => x?.type === "DRIVE" && Number(x?.durationSec ?? 0) > 0,
+  );
+  return { hasRelevant, hasDrive, onlyDriveZero };
+}
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
@@ -152,6 +198,22 @@ function yesterdayWIB() {
   const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
   const dd = String(dt.getUTCDate()).padStart(2, "0");
   return `${yy}-${mm}-${dd}`;
+}
+
+function ymdFromIsoWib(iso?: string | null) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jakarta",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(d);
+  const y = parts.find((p) => p.type === "year")?.value ?? "1970";
+  const m = parts.find((p) => p.type === "month")?.value ?? "01";
+  const dd = parts.find((p) => p.type === "day")?.value ?? "01";
+  return `${y}-${m}-${dd}`;
 }
 
 // ================================
@@ -527,12 +589,12 @@ function PlanLineActualBarChart({
   rows: { label: string; planCount: number; completeCount: number }[];
 }) {
   // ✅ dibuat lebih tinggi supaya label destinasi kebaca
-  const width = Math.max(980, rows.length * 120);
-  const height = 340;
+  const width = Math.max(600, rows.length * 160);
+  const height = 360;
 
-  const padX = 34;
+  const padX = 24;
   const padTop = 20;
-  const padBottom = 170;
+  const padBottom = 190;
 
   const innerW = width - padX * 2;
   const innerH = height - padTop - padBottom;
@@ -543,7 +605,7 @@ function PlanLineActualBarChart({
   const maxY = Math.max(1, maxPlan, maxCnt);
 
   const toX = (i: number) =>
-    padX + (rows.length <= 1 ? 0 : (i / (rows.length - 1)) * innerW);
+    padX + ((i + 0.5) / Math.max(1, rows.length)) * innerW;
 
   const toY = (v: number) => padTop + (1 - v / (maxY || 1)) * innerH;
 
@@ -551,10 +613,10 @@ function PlanLineActualBarChart({
     .map((r, i) => `${i === 0 ? "M" : "L"} ${toX(i)} ${toY(r.planCount)}`)
     .join(" ");
 
-  const barW =
-    rows.length <= 1
-      ? 80
-      : Math.max(14, Math.min(90, innerW / rows.length - 16));
+  const barW = Math.max(
+    22,
+    Math.min(110, innerW / Math.max(1, rows.length) - 20),
+  );
 
   const leftLabel = rows[0]?.label ?? "-";
   const rightLabel = rows[rows.length - 1]?.label ?? "-";
@@ -565,7 +627,7 @@ function PlanLineActualBarChart({
     if (!s) return ["-"];
 
     // kalau pendek, langsung
-    if (s.length <= 14) return [s];
+    if (s.length <= 18) return [s];
 
     // coba pecah di spasi terdekat tengah
     const parts = s.split(/\s+/).filter(Boolean);
@@ -591,8 +653,8 @@ function PlanLineActualBarChart({
     const l2 = b.join(" ");
 
     // safety truncate
-    const t1 = l1.length > 16 ? l1.slice(0, 16) + "…" : l1;
-    const t2 = l2.length > 16 ? l2.slice(0, 16) + "…" : l2;
+    const t1 = l1.length > 20 ? l1.slice(0, 20) + "…" : l1;
+    const t2 = l2.length > 20 ? l2.slice(0, 20) + "…" : l2;
 
     return t2 ? [t1, t2] : [t1];
   };
@@ -614,110 +676,112 @@ function PlanLineActualBarChart({
         ) : (
           <>
             <div className="overflow-x-auto">
-              <svg
-                viewBox={`0 0 ${width} ${height}`}
-                className="h-[340px]"
-                style={{ minWidth: width }}
-              >
-                {/* grid */}
-                <g>
-                  {[0, 1, 2, 3].map((i) => {
-                    const y = padTop + (i / 3) * innerH;
-                    return (
-                      <line
-                        key={i}
-                        x1={padX}
-                        y1={y}
-                        x2={padX + innerW}
-                        y2={y}
-                        stroke="#E5E7EB"
-                        strokeWidth="1"
-                      />
-                    );
-                  })}
-                </g>
-
-                {/* bars (actual complete) */}
-                <g>
-                  {rows.map((r, i) => {
-                    if (!r.completeCount) return null;
-                    const x = toX(i) - barW / 2;
-                    const y = toY(r.completeCount);
-                    const h = padTop + innerH - y;
-                    return (
-                      <g key={i}>
-                        <rect
-                          x={x}
-                          y={y}
-                          width={barW}
-                          height={Math.max(0, h)}
-                          rx={10}
-                          fill="#16A34A"
-                          opacity={0.85}
+              <div className="min-w-full flex justify-center">
+                <svg
+                  viewBox={`0 0 ${width} ${height}`}
+                  className="h-[340px] w-full"
+                  style={{ maxWidth: width }}
+                >
+                  {/* grid */}
+                  <g>
+                    {[0, 1, 2, 3].map((i) => {
+                      const y = padTop + (i / 3) * innerH;
+                      return (
+                        <line
+                          key={i}
+                          x1={padX}
+                          y1={y}
+                          x2={padX + innerW}
+                          y2={y}
+                          stroke="#E5E7EB"
+                          strokeWidth="1"
                         />
-                        {/* value label on top of bar */}
-                        <text
-                          x={toX(i)}
-                          y={Math.max(padTop + 12, y - 8)}
-                          textAnchor="middle"
-                          fontSize="12"
-                          fontWeight="800"
-                          fill="#64748B"
-                        >
-                          {r.completeCount}
-                        </text>
-                      </g>
-                    );
-                  })}
-                </g>
+                      );
+                    })}
+                  </g>
 
-                {/* plan line (target count) */}
-                <path
-                  d={lineD}
-                  fill="none"
-                  stroke="#2563EB"
-                  strokeWidth={3.5}
-                  strokeLinecap="round"
-                />
-                {rows.map((r, i) => (
-                  <circle
-                    key={i}
-                    cx={toX(i)}
-                    cy={toY(r.planCount)}
-                    r={4.2}
-                    fill="#2563EB"
-                    opacity={0.95}
+                  {/* bars (actual complete) */}
+                  <g>
+                    {rows.map((r, i) => {
+                      if (!r.completeCount) return null;
+                      const x = toX(i) - barW / 2;
+                      const y = toY(r.completeCount);
+                      const h = padTop + innerH - y;
+                      return (
+                        <g key={i}>
+                          <rect
+                            x={x}
+                            y={y}
+                            width={barW}
+                            height={Math.max(0, h)}
+                            rx={10}
+                            fill="#16A34A"
+                            opacity={0.85}
+                          />
+                          {/* value label on top of bar */}
+                          <text
+                            x={toX(i)}
+                            y={Math.max(padTop + 12, y - 8)}
+                            textAnchor="middle"
+                            fontSize="12"
+                            fontWeight="800"
+                            fill="#64748B"
+                          >
+                            {r.completeCount}
+                          </text>
+                        </g>
+                      );
+                    })}
+                  </g>
+
+                  {/* plan line (target count) */}
+                  <path
+                    d={lineD}
+                    fill="none"
+                    stroke="#2563EB"
+                    strokeWidth={3.5}
+                    strokeLinecap="round"
                   />
-                ))}
+                  {rows.map((r, i) => (
+                    <circle
+                      key={i}
+                      cx={toX(i)}
+                      cy={toY(r.planCount)}
+                      r={4.2}
+                      fill="#2563EB"
+                      opacity={0.95}
+                    />
+                  ))}
 
-                {/* axis labels */}
-                <g fontSize="12" fill="#64748B" fontWeight="800">
-                  <text x={padX} y={padTop + 12} textAnchor="start">
-                    {maxY}
-                  </text>
-                  <text x={padX} y={padTop + innerH + 14} textAnchor="start">
-                    0
-                  </text>
-                </g>
+                  {/* axis labels */}
+                  <g fontSize="12" fill="#64748B" fontWeight="800">
+                    <text x={padX} y={padTop + 12} textAnchor="start">
+                      {maxY}
+                    </text>
+                    <text x={padX} y={padTop + innerH + 14} textAnchor="start">
+                      0
+                    </text>
+                  </g>
 
-                {/* x labels (destination) - ✅ multiline, tidak diputar supaya tidak kepotong */}
-                <g fontSize="10" fill="#475569" fontWeight="700">
-                  {rows.map((r, i) => {
-                    const lines = wrap2(r.label);
-                    const x = toX(i);
-                    const y = padTop + innerH + 48;
-                    return (
-                      <text key={i} x={x} y={y} textAnchor="middle">
-                        {lines.map((ln, idx) => (
-                          <tspan key={idx} x={x} dy={idx === 0 ? 0 : 14}>
-                            {ln}
-                          </tspan>
-                        ))}
-                      </text>
-                    );
-                  })}
-                </g>
-              </svg>
+                  {/* x labels (destination) - ✅ multiline, tidak diputar supaya tidak kepotong */}
+                  <g fontSize="10" fill="#475569" fontWeight="700">
+                    {rows.map((r, i) => {
+                      const lines = wrap2(r.label);
+                      const x = toX(i);
+                      const y = padTop + innerH + 48;
+                      return (
+                        <text key={i} x={x} y={y} textAnchor="middle">
+                          {lines.map((ln, idx) => (
+                            <tspan key={idx} x={x} dy={idx === 0 ? 0 : 14}>
+                              {ln}
+                            </tspan>
+                          ))}
+                        </text>
+                      );
+                    })}
+                  </g>
+                </svg>
+              </div>
             </div>
 
             {/* <div className="mt-2 flex items-center justify-between text-xs font-semibold text-slate-600">
@@ -729,11 +793,11 @@ function PlanLineActualBarChart({
             <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] font-semibold text-slate-600">
               <span className="inline-flex items-center gap-2">
                 <span className="inline-block h-2.5 w-7 rounded-full bg-blue-600" />
-                Plan (target delivery)
+                Plan
               </span>
               <span className="inline-flex items-center gap-2">
                 <span className="inline-block h-2.5 w-7 rounded-full bg-emerald-600" />
-                Actual (delivery complete)
+                Actual
               </span>
             </div>
 
@@ -767,7 +831,7 @@ function PlanVsActualChart({
 }) {
   const maxV = Math.max(
     1,
-    ...rows.map((r) => Math.max(r.planDurMin, r.actualAvgMin ?? 0))
+    ...rows.map((r) => Math.max(r.planDurMin, r.actualAvgMin ?? 0)),
   );
 
   return (
@@ -870,6 +934,53 @@ function PlanVsActualChart({
   );
 }
 
+function RealtimeMiniBarChart({
+  title,
+  rows,
+  helper,
+}: {
+  title: string;
+  helper?: string;
+  rows: { label: string; value: number; colorClass?: string }[];
+}) {
+  const maxV = Math.max(1, ...rows.map((r) => r.value));
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-extrabold text-slate-900">{title}</div>
+        {helper ? (
+          <div className="text-[11px] font-semibold text-slate-500">
+            {helper}
+          </div>
+        ) : null}
+      </div>
+      <div className="mt-4 space-y-3">
+        {rows.map((r) => {
+          const w = clamp((r.value / maxV) * 100, 6, 100);
+          return (
+            <div key={r.label} className="flex items-center gap-3">
+              <div className="w-20 text-xs font-semibold text-slate-600">
+                {r.label}
+              </div>
+              <div className="flex-1">
+                <div className="h-3 rounded-full bg-slate-100 overflow-hidden">
+                  <div
+                    className={`h-full rounded-full ${r.colorClass ?? "bg-blue-600"}`}
+                    style={{ width: `${w}%` }}
+                  />
+                </div>
+              </div>
+              <div className="w-10 text-right text-xs font-extrabold text-slate-900">
+                {r.value}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // helper From -> To untuk On Progress
 function getFromTo(d: DriverStatus) {
   const dir = (d.direction ?? "").toLowerCase();
@@ -895,10 +1006,11 @@ export default function DashboardPage() {
 
   const DASHBOARD_LATEST_CACHE_KEY = "dashboard-latest-cache-v1";
   const MAP_CACHE_KEY = "realtime-map-cache-v1";
+  const DASHBOARD_TIMELINE_CACHE_KEY = "dashboard-timeline-cache-v1";
+  const DASHBOARD_ACTUAL_CACHE_KEY = "dashboard-actual-cache-v1";
 
-  const [deliveryDateFilter, setDeliveryDateFilter] = useState<string>(
-    todayWIB()
-  );
+  const [deliveryDateFilter, setDeliveryDateFilter] =
+    useState<string>(todayWIB());
 
   const [planGroupFilter, setPlanGroupFilter] = useState<string>("ALL");
 
@@ -909,6 +1021,10 @@ export default function DashboardPage() {
   // ✅ keep last valid realtime payload supaya truck tidak hilang saat API error/429/empty
   const lastOkLatestRef = useRef<DriverStatus[]>([]);
   const didFirstLoadRef = useRef(false);
+  const timelineCacheRef = useRef<
+    Record<string, Record<string, TimelineCacheEntry>>
+  >({});
+  const actualCacheRef = useRef<Record<string, Record<string, boolean>>>({});
 
   // ✅ hanya yang masih progress (belum complete) + ada posisi
   // NOTE: didefinisikan lebih awal karena dipakai oleh memo lain (activePlateSet/activeDestSet)
@@ -921,14 +1037,30 @@ export default function DashboardPage() {
   }, [latest]);
 
   const activeDriversFiltered = useMemo(() => {
-    if (planGroupFilter === "ALL") return activeDrivers;
-    return activeDrivers.filter(
-      (d) => getCustomerLabelByPlate(d.plate) === planGroupFilter
+    const day = deliveryDateFilter ?? todayWIB();
+    const base = activeDrivers.filter((d) => {
+      const ymd = ymdFromIsoWib(d.updatedAt);
+      return ymd === day;
+    });
+    if (planGroupFilter === "ALL") return base;
+    return base.filter(
+      (d) => getCustomerLabelByPlate(d.plate) === planGroupFilter,
     );
-  }, [activeDrivers, planGroupFilter]);
+  }, [activeDrivers, planGroupFilter, deliveryDateFilter]);
+
+  const timelineDrivers = useMemo(() => {
+    if (planGroupFilter === "ALL") return latest;
+    return latest.filter(
+      (d) => getCustomerLabelByPlate(d.plate) === planGroupFilter,
+    );
+  }, [latest, planGroupFilter]);
 
   const [historyRows, setHistoryRows] = useState<HistoryRow[]>([]);
-  const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
+  // stop summary removed
+  const [timelineSn, setTimelineSn] = useState<string>("");
+  const [timelineItems, setTimelineItems] = useState<any[]>([]);
+  const [timelineLoading, setTimelineLoading] = useState(false);
+  const [actualBySn, setActualBySn] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     try {
@@ -947,6 +1079,45 @@ export default function DashboardPage() {
       }
     } catch {}
   }, []);
+
+  useEffect(() => {
+    try {
+      const rawTimeline = window.sessionStorage.getItem(
+        DASHBOARD_TIMELINE_CACHE_KEY,
+      );
+      if (rawTimeline) {
+        const parsed = JSON.parse(rawTimeline);
+        if (parsed && typeof parsed === "object") {
+          timelineCacheRef.current = parsed;
+        }
+      }
+    } catch {}
+    try {
+      const rawActual = window.sessionStorage.getItem(
+        DASHBOARD_ACTUAL_CACHE_KEY,
+      );
+      if (rawActual) {
+        const parsed = JSON.parse(rawActual);
+        if (parsed && typeof parsed === "object") {
+          actualCacheRef.current = parsed;
+        }
+      }
+      const day = deliveryDateFilter ?? todayWIB();
+      const cachedActual = actualCacheRef.current?.[day];
+      if (cachedActual && Object.keys(cachedActual).length) {
+        setActualBySn(cachedActual);
+      }
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const day = deliveryDateFilter ?? todayWIB();
+    const cachedActual = actualCacheRef.current?.[day];
+    if (cachedActual && Object.keys(cachedActual).length) {
+      setActualBySn((prev) => ({ ...cachedActual, ...prev }));
+    }
+  }, [deliveryDateFilter]);
 
   // ✅ DASHBOARD harus ngikutin kendaraan yang ada di Realtime Map
   // Basisnya: plate/destination yang sedang aktif (activeDrivers)
@@ -1025,6 +1196,8 @@ export default function DashboardPage() {
           const lng = typeof r?.longitude === "number" ? r.longitude : null;
           const alias = typeof r?.alias === "string" ? r.alias : null;
           const sn = typeof r?.sn === "string" ? r.sn : String(r?.id ?? "");
+          const speed =
+            typeof r?.speed === "number" ? r.speed : Number(r?.speed ?? 0) || 0;
 
           return {
             id: sn,
@@ -1042,6 +1215,7 @@ export default function DashboardPage() {
             etdTime: null,
             etaTime: null,
             isFinished: false,
+            speed,
 
             updatedAt: nowIso,
             deliveryDate: null,
@@ -1076,29 +1250,6 @@ export default function DashboardPage() {
         setLoading(false);
       }
     }
-  };
-
-  const fetchHistory = async (dayArg?: string) => {
-    try {
-      const day = dayArg ?? deliveryDateFilter ?? todayWIB();
-      const res = await fetch(
-        `/api/history/report?complete=true&dateFrom=${day}&dateTo=${day}`,
-        { cache: "no-store" }
-      );
-      if (!res.ok) return;
-      const json = await res.json();
-      const rows = Array.isArray(json?.data) ? (json.data as HistoryRow[]) : [];
-      setHistoryRows(rows);
-    } catch {}
-  };
-
-  const fetchMetrics = async () => {
-    try {
-      const res = await fetch("/api/dashboard/metrics", { cache: "no-store" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json: DashboardMetrics = await res.json();
-      if (json?.ok) setMetrics(json);
-    } catch {}
   };
 
   const fetchPlan = async (dayArg?: string) => {
@@ -1145,39 +1296,229 @@ export default function DashboardPage() {
     try {
       window.sessionStorage.setItem(
         DASHBOARD_LATEST_CACHE_KEY,
-        JSON.stringify({ drivers: latest, savedAt: Date.now() })
+        JSON.stringify({ drivers: latest, savedAt: Date.now() }),
       );
     } catch {}
   }, [latest]);
 
   useEffect(() => {
     fetchLatest();
-    fetchHistory(deliveryDateFilter);
-    fetchMetrics();
     fetchPlan(deliveryDateFilter);
 
     const id1 = window.setInterval(fetchLatest, 15000);
-    const idH = window.setInterval(
-      () => fetchHistory(deliveryDateFilter),
-      30000
-    );
-    const id2 = window.setInterval(fetchMetrics, 30000);
     const idP = window.setInterval(() => fetchPlan(deliveryDateFilter), 120000);
 
     return () => {
       window.clearInterval(id1);
-      window.clearInterval(idH);
-      window.clearInterval(id2);
       window.clearInterval(idP);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    fetchHistory(deliveryDateFilter);
     fetchPlan(deliveryDateFilter);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deliveryDateFilter]);
+
+  // stop summary removed
+
+  useEffect(() => {
+    const list = timelineDrivers.map((d) =>
+      String(d.driverId ?? d.id ?? "").trim(),
+    );
+    if (!list.length) {
+      setTimelineSn("");
+      setTimelineItems([]);
+      setTimelineLoading(false);
+      return;
+    }
+    if (!timelineSn || !list.includes(timelineSn)) {
+      setTimelineLoading(true);
+      setTimelineItems([]);
+      setTimelineSn(list[0]);
+    }
+  }, [timelineDrivers, timelineSn]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (!timelineDrivers.length) {
+        setActualBySn({});
+        return;
+      }
+      const day = deliveryDateFilter ?? todayWIB();
+      const cachedActual = actualCacheRef.current?.[day] ?? {};
+      const next: Record<string, boolean> = { ...cachedActual };
+      await Promise.all(
+        timelineDrivers.map(async (d) => {
+          const sn = String(d.driverId ?? d.id ?? "").trim();
+          if (!sn) return;
+          try {
+            const res = await fetch(
+              `/api/gps/timeline?sn=${encodeURIComponent(sn)}&date=${encodeURIComponent(
+                day,
+              )}`,
+              { cache: "no-store" },
+            );
+            if (!res.ok) return;
+            const json = await res.json();
+            const tl: any[] = Array.isArray(json?.timeline)
+              ? json.timeline
+              : [];
+            const { hasRelevant, hasDrive } = analyzeTimelineItems(tl);
+            const computed = hasRelevant && hasDrive;
+            if (cachedActual[sn] && !computed) {
+              next[sn] = true;
+            } else {
+              next[sn] = computed;
+            }
+          } catch {}
+        }),
+      );
+      if (!cancelled) {
+        setActualBySn(next);
+        actualCacheRef.current = {
+          ...actualCacheRef.current,
+          [day]: next,
+        };
+        try {
+          window.sessionStorage.setItem(
+            DASHBOARD_ACTUAL_CACHE_KEY,
+            JSON.stringify(actualCacheRef.current),
+          );
+        } catch {}
+      }
+    };
+
+    run();
+    const id = window.setInterval(run, 60000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [timelineDrivers, deliveryDateFilter]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (!timelineSn) {
+        setTimelineItems([]);
+        setTimelineLoading(false);
+        return;
+      }
+      const day = deliveryDateFilter ?? todayWIB();
+      const cached = timelineCacheRef.current?.[day]?.[timelineSn] ?? null;
+      if (cached?.items?.length) {
+        setTimelineItems(cached.items);
+        setTimelineLoading(false);
+        if (cached.hasRelevant && cached.hasDrive) {
+          setActualBySn((prev) => ({ ...prev, [timelineSn]: true }));
+        }
+      } else {
+        setTimelineItems([]);
+        setTimelineLoading(true);
+      }
+      try {
+        const res = await fetch(
+          `/api/gps/timeline?sn=${encodeURIComponent(timelineSn)}&date=${encodeURIComponent(
+            day,
+          )}`,
+          { cache: "no-store" },
+        );
+        if (!res.ok) {
+          if (!cached?.items?.length) setTimelineItems([]);
+          return;
+        }
+        const json = await res.json();
+        if (cancelled) return;
+
+        const tl0: any[] = Array.isArray(json?.timeline) ? json.timeline : [];
+        const hasStop = tl0.some((x) => x?.type === "STOP");
+        const stops0: any[] = Array.isArray(json?.stops) ? json.stops : [];
+        const tlStops: any[] =
+          !hasStop && stops0.length
+            ? stops0.map((s: any, i: number) => {
+                const startSec = getStopStartSec(s);
+                const endSec = getStopEndSec(s);
+                const durationSec =
+                  typeof s?.durationSec === "number"
+                    ? s.durationSec
+                    : startSec != null && endSec != null && endSec >= startSec
+                      ? endSec - startSec
+                      : 0;
+                return {
+                  type: "STOP",
+                  stopNo: Number(s?.stopNo ?? i + 1),
+                  startSec,
+                  endSec,
+                  durationSec,
+                  address: String(s?.address ?? "").trim(),
+                };
+              })
+            : [];
+
+        const merged = [...tl0, ...tlStops]
+          .filter((x) => x && (x.type === "DRIVE" || x.type === "STOP"))
+          .sort((a, b) => Number(a?.startSec ?? 0) - Number(b?.startSec ?? 0));
+
+        const items = merged.map((it) => ({
+          type: it.type,
+          startSec: it.startSec,
+          durationSec: it.durationSec ?? 0,
+          distanceMeters: it.distanceMeters ?? 0,
+          address: it.address ?? "",
+        }));
+
+        const { hasRelevant, hasDrive } = analyzeTimelineItems(items);
+        if (hasRelevant || !cached?.items?.length) {
+          setTimelineItems(items);
+        }
+        if (hasRelevant || !cached?.items?.length) {
+          if (!timelineCacheRef.current[day]) {
+            timelineCacheRef.current[day] = {};
+          }
+          timelineCacheRef.current[day][timelineSn] = {
+            items,
+            savedAt: Date.now(),
+            hasRelevant,
+            hasDrive,
+          };
+          try {
+            window.sessionStorage.setItem(
+              DASHBOARD_TIMELINE_CACHE_KEY,
+              JSON.stringify(timelineCacheRef.current),
+            );
+          } catch {}
+        }
+        if (hasRelevant && hasDrive) {
+          const updated = {
+            ...(actualCacheRef.current?.[day] ?? {}),
+            [timelineSn]: true,
+          };
+          actualCacheRef.current = {
+            ...actualCacheRef.current,
+            [day]: updated,
+          };
+          setActualBySn((prev) => ({ ...prev, [timelineSn]: true }));
+          try {
+            window.sessionStorage.setItem(
+              DASHBOARD_ACTUAL_CACHE_KEY,
+              JSON.stringify(actualCacheRef.current),
+            );
+          } catch {}
+        }
+      } catch {
+        if (!cancelled && !cached?.items?.length) setTimelineItems([]);
+      } finally {
+        if (!cancelled) setTimelineLoading(false);
+      }
+    };
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [timelineSn, deliveryDateFilter]);
 
   const activeDriversCount = activeDriversFiltered.length;
 
@@ -1233,6 +1574,63 @@ export default function DashboardPage() {
     }
     return m;
   }, [dashboardHistoryRows]);
+
+  // ✅ Plan vs Actual (delivery count) from realtime
+  const planActualDeliveryRows = useMemo(() => {
+    const rows = activeDriversFiltered
+      .map((d) => {
+        const plate =
+          normalizePlate(d.plate) || String(d.driverId ?? d.id ?? "");
+        const customer = getCustomerLabelByPlate(d.plate);
+        const label =
+          customer && customer !== "-" ? `${plate} (${customer})` : plate;
+        const sn = String(d.driverId ?? d.id ?? "").trim();
+        return {
+          label,
+          planCount: 1,
+          completeCount: actualBySn[sn] ? 1 : 0,
+        };
+      })
+      .sort((a, b) => a.label.localeCompare(b.label));
+
+    return rows;
+  }, [activeDriversFiltered, actualBySn]);
+
+  const movingStoppedRows = useMemo(() => {
+    const total = activeDriversFiltered.length;
+    const moving = activeDriversFiltered.filter(
+      (d) => (typeof d.speed === "number" ? d.speed : 0) > 3,
+    ).length;
+    const stopped = Math.max(0, total - moving);
+    return [
+      { label: "Moving", value: moving, colorClass: "bg-emerald-600" },
+      { label: "Stopped", value: stopped, colorClass: "bg-rose-500" },
+    ];
+  }, [activeDriversFiltered]);
+
+  const movingCount = movingStoppedRows[0]?.value ?? 0;
+  const stoppedCount = movingStoppedRows[1]?.value ?? 0;
+
+  const speedBucketRows = useMemo(() => {
+    const buckets = [
+      { label: "0-3", min: 0, max: 3, colorClass: "bg-slate-400" },
+      { label: "3-10", min: 3, max: 10, colorClass: "bg-sky-500" },
+      { label: "10-30", min: 10, max: 30, colorClass: "bg-blue-600" },
+      { label: "30-60", min: 30, max: 60, colorClass: "bg-emerald-600" },
+      { label: "60+", min: 60, max: Infinity, colorClass: "bg-amber-500" },
+    ];
+    const counts = buckets.map((b) => ({ ...b, value: 0 }));
+    for (const d of activeDriversFiltered) {
+      const s = typeof d.speed === "number" ? d.speed : 0;
+      const b = counts.find((x) => s > x.min && s <= x.max) ?? counts[0];
+      b.value += 1;
+    }
+    return counts.map(({ label, value, colorClass }) => ({
+      label,
+      value,
+      colorClass,
+    }));
+  }, [activeDriversFiltered]);
 
   // ✅ rows untuk Plan vs Actual (pakai forward)
   const planVsActualRows = useMemo(() => {
@@ -1341,7 +1739,13 @@ export default function DashboardPage() {
         completeCount: cntMap.get(dest) ?? 0,
       }))
       .sort((a, b) => a.label.localeCompare(b.label));
-  }, [dashboardHistoryRows, effectivePlan, planGroupFilter, relevantDestSet, groupByDestination]);
+  }, [
+    dashboardHistoryRows,
+    effectivePlan,
+    planGroupFilter,
+    relevantDestSet,
+    groupByDestination,
+  ]);
 
   // ✅ History filter: Group (based on actual customer label)
   const filteredHistoryRows = useMemo(() => {
@@ -1447,10 +1851,10 @@ export default function DashboardPage() {
           </div>
         ) : null}
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <StatCard
-            title="Active Trucks"
-            value={loading ? "-" : activeTrucksCount}
+            title="Moving Trucks"
+            value={loading ? "-" : movingCount}
             icon={
               <svg
                 viewBox="0 0 24 24"
@@ -1469,8 +1873,8 @@ export default function DashboardPage() {
           />
 
           <StatCard
-            title="Active Drivers"
-            value={loading ? "-" : activeDriversCount}
+            title="Stopped Trucks"
+            value={loading ? "-" : stoppedCount}
             icon={
               <svg
                 viewBox="0 0 24 24"
@@ -1485,32 +1889,11 @@ export default function DashboardPage() {
               </svg>
             }
           />
-
-          <StatCard
-            title="Trip Selesai (Hari ini)"
-            value={metrics ? metrics.today.completedTrips : "-"}
-            icon={
-              <svg
-                viewBox="0 0 24 24"
-                width="22"
-                height="22"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-              >
-                <path
-                  d="M20 6 9 17l-5-5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            }
-          />
         </div>
 
         {/* ✅ Global Filter (dipakai untuk semua section) */}
         <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 md:items-center md:gap-4">
             {/* Group */}
             <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2">
               <div className="mr-1 text-[11px] font-extrabold text-slate-600">
@@ -1547,7 +1930,7 @@ export default function DashboardPage() {
             </div>
 
             {/* Date */}
-            <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2">
+            <div className="flex items-center justify-start gap-2 rounded-2xl border border-slate-200 bg-white p-2 md:justify-end">
               <div className="mr-1 text-[11px] font-extrabold text-slate-600">
                 Date
               </div>
@@ -1583,27 +1966,22 @@ export default function DashboardPage() {
               />
             </div>
 
-            <div />
+            <div className="hidden" />
           </div>
         </div>
 
-        {/* ✅ A & C: Pengganti 2 grafik lama (posisi side-by-side) */}
+        {/* ✅ Realtime Insights */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <OnTimeVsDelayChart
-              badgeLabel={`On-time vs Delay`}
-              onTime={onTimeDelaySummary.onTime}
-              delayed={onTimeDelaySummary.delayed}
-              noData={onTimeDelaySummary.noData}
-            />
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <TopDelayDestinationsChart
-              badgeLabel={`Top Delay Destinations`}
-              rows={topDelayDestinations}
-            />
-          </div>
+          <RealtimeMiniBarChart
+            title="Moving vs Stopped"
+            helper="Realtime"
+            rows={movingStoppedRows}
+          />
+          <RealtimeMiniBarChart
+            title="Speed Distribution"
+            helper="km/h"
+            rows={speedBucketRows}
+          />
         </div>
 
         {/* ✅ Plan vs Actual + Toggle Forward/Reverse */}
@@ -1623,239 +2001,117 @@ export default function DashboardPage() {
             </div>
 
             <div className="mt-4">
-              <PlanVsActualChart rows={planVsActualRows} />
+              <PlanLineActualBarChart
+                badgeLabel="Plan vs Actual (Delivery)"
+                rows={planActualDeliveryRows}
+              />
             </div>
           </div>
         </div>
 
-        {/* ✅ ON PROGRESS */}
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="flex items-center justify-between gap-3">
-            <div>
+        {/* ✅ Realtime History */}
+        <div className="grid grid-cols-1 gap-4">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex items-center justify-between">
               <div className="text-sm font-extrabold text-slate-900">
-                On Progress
+                Trip Timeline
               </div>
-              <div className="text-xs font-medium text-slate-600"></div>
-            </div>
-
-            <div className="text-xs font-semibold text-slate-600">
-              Total:{" "}
-              <span className="text-slate-900">{activeDriversCount}</span>
-            </div>
-          </div>
-
-          <div className="mt-4 overflow-auto rounded-xl border border-slate-200">
-            <table className="w-full text-sm">
-              <thead className="bg-slate-50 text-slate-700">
-                <tr className="border-b border-slate-200">
-                  <th className="text-left py-3 px-4 font-extrabold">Driver</th>
-                  <th className="text-left py-3 px-4 font-extrabold">
-                    Police Number
-                  </th>
-                  <th className="text-left py-3 px-4 font-extrabold">Route</th>
-                  <th className="text-left py-3 px-4 font-extrabold">
-                    Delivery Date
-                  </th>
-                  <th className="text-left py-3 px-4 font-extrabold">
-                    Updated
-                  </th>
-                </tr>
-              </thead>
-
-              <tbody className="divide-y divide-slate-200">
-                {(loading ? [] : activeDriversFiltered).slice(0, 20).map((d) => {
-                  const { from, to } = getFromTo(d);
-                  const dir = (d.direction ?? "forward").toUpperCase();
-
-                  return (
-                    <tr key={d.id} className="hover:bg-slate-50">
-                      <td className="py-3 px-4 font-semibold text-slate-900">
-                        {d.driver?.name ?? "-"}
-                        {d.driver?.phone ? (
-                          <div className="text-xs font-semibold text-slate-500">
-                            {d.driver.phone}
-                          </div>
-                        ) : null}
-                      </td>
-
-                      <td className="py-3 px-4 text-slate-700 font-semibold">
-                        {normalizePlate(d.plate)}
-                        {getCustomerLabelByPlate(d.plate) ? (
-                          <div className="text-xs font-semibold text-slate-500">
-                            {getCustomerLabelByPlate(d.plate)}
-                          </div>
-                        ) : null}
-                      </td>
-
-                      <td className="py-3 px-4 text-slate-700">
-                        <div className="font-semibold text-slate-900">
-                          <span className="mr-2 inline-flex items-center rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-extrabold text-slate-700">
-                            {dir}
-                          </span>
-                          {from} → {to}
-                        </div>
-
-                        <div className="mt-0.5 text-xs font-semibold text-slate-500">
-                          ETD:{" "}
-                          <span className="text-slate-700">
-                            {normalizeTimeHHmm(d.etdTime)}
-                          </span>{" "}
-                          • ETA:{" "}
-                          <span className="text-slate-700">
-                            {normalizeTimeHHmm(d.etaTime)}
-                          </span>
-                        </div>
-                      </td>
-
-                      <td className="py-3 px-4 text-slate-700 font-semibold">
-                        {d.deliveryDate
-                          ? fmtDeliveryDate(d.deliveryDate)
-                          : fmtDateWIB(d.updatedAt)}
-                      </td>
-
-                      <td className="py-3 px-4 text-slate-600 font-medium">
-                        {fmtLastUpdate(d.updatedAt)}
-                      </td>
-                    </tr>
-                  );
-                })}
-
-                {!loading && activeDriversFiltered.length === 0 && (
-                  <tr>
-                    <td className="py-5 px-4 text-slate-600" colSpan={5}>
-                      Belum ada trip yang berjalan.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* HISTORY COMPLETE */}
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-            <div>
-              <div className="text-sm font-extrabold text-slate-900">
-                History (Complete)
-              </div>
-              <div className="text-xs font-medium text-slate-600">
-                {/* trip selesai untuk tanggal delivery{" "} */}
-                <span className="font-semibold text-slate-900">
-                  {fmtDeliveryDate(deliveryDateFilter)}
-                </span>{" "}
-                {/* (WIB) */}
+              <div className="text-[11px] font-semibold text-slate-500">
+                {fmtDeliveryDate(deliveryDateFilter)}
               </div>
             </div>
-
-            <div className="text-xs font-semibold text-slate-600">
-              Total:{" "}
-              <span className="text-slate-900">
-                {filteredHistoryRows.length}
-              </span>
-            </div>
-          </div>
-
-          <div className="mt-4 overflow-auto rounded-xl border border-slate-200">
-            <table className="w-full text-sm">
-              <thead className="bg-slate-50 text-slate-700">
-                <tr className="border-b border-slate-200">
-                  <th className="text-left py-3 px-4 font-extrabold">Driver</th>
-                  <th className="text-left py-3 px-4 font-extrabold">
-                    Police Number
-                  </th>
-                  <th className="text-left py-3 px-4 font-extrabold">
-                    Forward (Keberangkatan)
-                  </th>
-                  <th className="text-left py-3 px-4 font-extrabold">
-                    Reverse (Kepulangan)
-                  </th>
-                  <th className="text-left py-3 px-4 font-extrabold">
-                    Delivery Date
-                  </th>
-                  <th className="text-left py-3 px-4 font-extrabold">
-                    Last Updated
-                  </th>
-                </tr>
-              </thead>
-
-              <tbody className="divide-y divide-slate-200">
-                {filteredHistoryRows.slice(0, 30).map((r) => (
-                  <tr
-                    key={`${r.tripGroup}__${r.driverId}`}
-                    className="hover:bg-slate-50"
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {timelineDrivers.map((d) => {
+                const sn = String(d.driverId ?? d.id ?? "").trim();
+                const label = normalizePlate(d.plate) || sn;
+                const active = sn === timelineSn;
+                return (
+                  <button
+                    key={sn}
+                    type="button"
+                    onClick={() => {
+                      setTimelineSn(sn);
+                      setTimelineLoading(true);
+                      setTimelineItems([]);
+                    }}
+                    className={`rounded-full border px-3 py-1.5 text-xs font-bold transition-colors ${
+                      active
+                        ? "border-blue-200 bg-blue-50 text-blue-700"
+                        : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                    }`}
                   >
-                    <td className="py-3 px-4 font-semibold text-slate-900">
-                      {r.driverName ?? "-"}
-                      {r.driverPhone ? (
-                        <div className="text-xs font-semibold text-slate-500">
-                          {r.driverPhone}
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="mt-4 space-y-3">
+              {(() => {
+                if (timelineLoading) {
+                  return (
+                    <div className="text-sm font-semibold text-slate-500">
+                      Loading...
+                    </div>
+                  );
+                }
+                const onlyDriveZero =
+                  timelineItems.length === 1 &&
+                  timelineItems[0]?.type === "DRIVE" &&
+                  Number(timelineItems[0]?.distanceMeters ?? 0) === 0;
+                const emptyTimeline =
+                  timelineItems.length === 0 || onlyDriveZero;
+                if (emptyTimeline) {
+                  const label =
+                    timelineDrivers.find(
+                      (d) => String(d.driverId ?? d.id ?? "") === timelineSn,
+                    )?.plate ?? timelineSn;
+                  return (
+                    <div className="rounded-xl border border-dashed border-slate-300 px-4 py-6 text-center text-sm font-semibold text-slate-600">
+                      <span className="font-extrabold text-orange-600">
+                        {normalizePlate(label)}
+                      </span>{" "}
+                      has no relevant information in the selected time period.
+                    </div>
+                  );
+                }
+                return timelineItems.map((it, idx) => {
+                  const isStop = it.type === "STOP";
+                  return (
+                    <div
+                      key={`tl-${idx}`}
+                      className="flex items-start gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2"
+                    >
+                      <div
+                        className={`mt-1 h-2.5 w-2.5 rounded-full ${
+                          isStop ? "bg-red-500" : "bg-emerald-500"
+                        }`}
+                      />
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold text-slate-600">
+                          {isStop ? "Stopped at" : "Departed at"}{" "}
+                          <span className="text-slate-900">
+                            {it.startSec
+                              ? fmtTimeHHmm(new Date(it.startSec * 1000))
+                              : "-"}
+                          </span>
                         </div>
-                      ) : null}
-                    </td>
-
-                    <td className="py-3 px-4 font-semibold text-slate-700">
-                      {normalizePlate(r.plate)}
-                      {getCustomerLabelByPlate(r.plate) ? (
-                        <div className="text-xs font-semibold text-slate-500">
-                          {getCustomerLabelByPlate(r.plate)}
+                        <div className="mt-0.5 text-sm font-extrabold text-slate-900">
+                          {isStop
+                            ? `Stop for: ${fmtHm(it.durationSec)}`
+                            : `Driving for: ${fmtHm(it.durationSec)}`}
                         </div>
-                      ) : null}
-                    </td>
-
-                    <td className="py-3 px-4 text-slate-700">
-                      <div className="font-semibold text-slate-900">
-                        {r.destinationForward ?? "-"}
+                        <div className="mt-0.5 text-[11px] font-medium text-slate-600">
+                          {isStop
+                            ? it.address || "-"
+                            : `Traveled: ${fmtKm(it.distanceMeters)}`}
+                        </div>
                       </div>
-                      <div className="mt-0.5 text-xs font-semibold text-slate-500">
-                        ETD:{" "}
-                        <span className="text-slate-700">
-                          {normalizeTimeHHmm(r.etdForward)}
-                        </span>{" "}
-                        • ETA:{" "}
-                        <span className="text-slate-700">
-                          {normalizeTimeHHmm(r.etaForward)}
-                        </span>
-                      </div>
-                    </td>
-
-                    <td className="py-3 px-4 text-slate-700">
-                      <div className="font-semibold text-slate-900">
-                        {r.destinationReverse ?? "PT Indonesia Koito"}
-                      </div>
-                      <div className="mt-0.5 text-xs font-semibold text-slate-500">
-                        ETD:{" "}
-                        <span className="text-slate-700">
-                          {normalizeTimeHHmm(r.etdReverse)}
-                        </span>{" "}
-                        • ETA:{" "}
-                        <span className="text-slate-700">
-                          {normalizeTimeHHmm(r.etaReverse)}
-                        </span>
-                      </div>
-                    </td>
-
-                    <td className="py-3 px-4 text-slate-700 font-semibold">
-                      {r.deliveryDate
-                        ? fmtDeliveryDate(r.deliveryDate)
-                        : fmtDateWIB(r.lastUpdated)}
-                    </td>
-
-                    <td className="py-3 px-4 text-slate-600 font-medium">
-                      {fmtLastUpdate(r.lastUpdated)}
-                    </td>
-                  </tr>
-                ))}
-
-                {filteredHistoryRows.length === 0 && (
-                  <tr>
-                    <td className="py-5 px-4 text-slate-600" colSpan={6}>
-                      Belum ada trip selesai untuk tanggal ini.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
           </div>
         </div>
       </div>

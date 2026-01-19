@@ -1941,6 +1941,10 @@ export default function RealtimeMap({
                           Number(a?.startSec ?? 0) - Number(b?.startSec ?? 0),
                       );
 
+                    const isToday =
+                      String(tripReplayDate ?? "") === ymdJakartaClient();
+                    const nowSec = Math.floor(Date.now() / 1000);
+
                     const normalized = merged.map((it, idx) => {
                       const startSec =
                         typeof it?.startSec === "number" ? it.startSec : null;
@@ -1951,23 +1955,26 @@ export default function RealtimeMap({
                           ? it.durationSec
                           : null;
 
-                      if (it?.type === "STOP" && startSec != null) {
-                        if (endSec == null || endSec <= startSec) {
-                          const next = merged
-                            .slice(idx + 1)
-                            .find((x) => typeof x?.startSec === "number");
-                          const nextStart =
-                            typeof next?.startSec === "number"
-                              ? next.startSec
-                              : null;
-                          if (nextStart != null && nextStart > startSec) {
-                            endSec = nextStart;
-                          } else if (
-                            typeof (tripReplayData as any)?.endSec === "number"
-                          ) {
-                            const fallbackEnd = (tripReplayData as any).endSec;
-                            if (fallbackEnd > startSec) endSec = fallbackEnd;
-                          }
+                      const next = merged
+                        .slice(idx + 1)
+                        .find((x) => typeof x?.startSec === "number");
+                      const nextStart =
+                        typeof next?.startSec === "number"
+                          ? next.startSec
+                          : null;
+
+                      if (startSec != null) {
+                        if (nextStart != null && nextStart > startSec) {
+                          endSec = nextStart;
+                        } else if (
+                          typeof (tripReplayData as any)?.endSec === "number"
+                        ) {
+                          const fallbackEnd = (tripReplayData as any).endSec;
+                          if (fallbackEnd > startSec) endSec = fallbackEnd;
+                        }
+
+                        if (isToday && (endSec == null || endSec > nowSec)) {
+                          endSec = nowSec;
                         }
 
                         if (endSec != null && endSec > startSec) {
