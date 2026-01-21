@@ -42,15 +42,34 @@ function pad2(n: number) {
   return String(n).padStart(2, "0");
 }
 
+function fmtJakartaYmd(d: Date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jakarta",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(d);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
+function isValidMonthDay(m: number, d: number) {
+  if (!Number.isFinite(m) || !Number.isFinite(d)) return false;
+  if (m < 1 || m > 12) return false;
+  if (d < 1 || d > 31) return false;
+  return true;
+}
+
 function normDate(v: any) {
   if (v === null || v === undefined) return "";
 
   if (v instanceof Date && !isNaN(v.getTime())) {
-    // Use local date parts to avoid shifting to previous day for WIB dates
-    const y = v.getFullYear();
-    const m = pad2(v.getMonth() + 1);
-    const d = pad2(v.getDate());
-    return `${y}-${m}-${d}`;
+    // Use Jakarta date parts to avoid timezone shifts from Excel dates
+    const ymd = fmtJakartaYmd(v);
+    const m = Number(ymd.slice(5, 7));
+    const d = Number(ymd.slice(8, 10));
+    if (!isValidMonthDay(m, d)) return "";
+    return ymd;
   }
 
   if (typeof v === "number" && Number.isFinite(v)) {
@@ -61,6 +80,7 @@ function normDate(v: any) {
       const y = parsed.y;
       const m = pad2(parsed.m);
       const d = pad2(parsed.d);
+      if (!isValidMonthDay(Number(m), Number(d))) return "";
       return `${y}-${m}-${d}`;
     }
   }
@@ -73,16 +93,25 @@ function normDate(v: any) {
   const iso = s.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})$/);
   if (iso) {
     const yyyy = iso[1];
-    const mm = pad2(Number(iso[2]));
-    const dd = pad2(Number(iso[3]));
+    const mmNum = Number(iso[2]);
+    const ddNum = Number(iso[3]);
+    if (!isValidMonthDay(mmNum, ddNum)) return "";
+    const mm = pad2(mmNum);
+    const dd = pad2(ddNum);
     return `${yyyy}-${mm}-${dd}`;
   }
 
   // Format: DD/MM/YYYY or DD-MM-YYYY or DD/MM/YY
   const dmy = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})$/);
   if (dmy) {
-    const dd = pad2(Number(dmy[1]));
-    const mm = pad2(Number(dmy[2]));
+    const a = Number(dmy[1]);
+    const b = Number(dmy[2]);
+    const useMdy = a <= 12 && b > 12;
+    const ddNum = useMdy ? b : a;
+    const mmNum = useMdy ? a : b;
+    if (!isValidMonthDay(mmNum, ddNum)) return "";
+    const dd = pad2(ddNum);
+    const mm = pad2(mmNum);
     let yyyy = dmy[3];
     if (yyyy.length === 2) yyyy = `20${yyyy}`;
     return `${yyyy}-${mm}-${dd}`;
@@ -262,8 +291,12 @@ export function parsePlanXlsx(ab: ArrayBuffer) {
 
   const ws = wb.Sheets[sheetName];
 
-  // ✅ defval keeps empty cells, raw keeps values (number/date)
-  const json = XLSX.utils.sheet_to_json(ws, { defval: "", raw: true }) as any[];
+  // ✅ defval keeps empty cells, raw=false to use formatted strings (avoids timezone shifts)
+  const json = XLSX.utils.sheet_to_json(ws, {
+    defval: "",
+    raw: false,
+    dateNF: "yyyy-mm-dd",
+  }) as any[];
 
   if (!json.length) {
     return { rows: [], errors: ["File kosong. Isi minimal 1 baris data."] };

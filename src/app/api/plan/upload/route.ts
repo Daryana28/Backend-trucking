@@ -54,7 +54,15 @@ export async function POST(req: Request) {
       )
     );
 
-    return NextResponse.json({ ok: true, count: rows.length });
+    const uniqueDates = Array.from(
+      new Set(rows.map((r) => String(r.deliveryDate ?? "").trim()).filter(Boolean)),
+    ).sort();
+
+    return NextResponse.json({
+      ok: true,
+      count: rows.length,
+      dates: uniqueDates,
+    });
   } catch (e) {
     console.error("POST /api/plan/upload error:", e);
     return NextResponse.json(

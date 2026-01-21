@@ -1047,6 +1047,9 @@ export default function DashboardPage() {
   const MAP_CACHE_KEY = "realtime-map-cache-v1";
   const DASHBOARD_TIMELINE_CACHE_KEY = "dashboard-timeline-cache-v1";
   const DASHBOARD_ACTUAL_CACHE_KEY = "dashboard-actual-cache-v1";
+  const PLAN_UPDATED_KEY = "plan-updated-at";
+  const lastPlanUpdatedRef = useRef(0);
+  const deliveryDateRef = useRef<string>(todayWIB());
 
   const [deliveryDateFilter, setDeliveryDateFilter] =
     useState<string>(todayWIB());
@@ -1349,11 +1352,66 @@ export default function DashboardPage() {
     fetchPlan(deliveryDateFilter);
 
     const id1 = window.setInterval(fetchLatest, 15000);
-    const idP = window.setInterval(() => fetchPlan(deliveryDateFilter), 120000);
+    const idP = window.setInterval(
+      () => fetchPlan(deliveryDateRef.current),
+      120000,
+    );
 
     return () => {
       window.clearInterval(id1);
       window.clearInterval(idP);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    deliveryDateRef.current = deliveryDateFilter;
+  }, [deliveryDateFilter]);
+
+  useEffect(() => {
+    try {
+      const v = Number(window.localStorage.getItem(PLAN_UPDATED_KEY) ?? 0);
+      if (Number.isFinite(v) && v > 0) lastPlanUpdatedRef.current = v;
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== PLAN_UPDATED_KEY) return;
+      fetchPlan(deliveryDateRef.current);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const checkPlanUpdated = () => {
+      try {
+        const v = Number(window.localStorage.getItem(PLAN_UPDATED_KEY) ?? 0);
+        if (
+          Number.isFinite(v) &&
+          v > 0 &&
+          v > lastPlanUpdatedRef.current
+        ) {
+          lastPlanUpdatedRef.current = v;
+          fetchPlan(deliveryDateRef.current);
+        }
+      } catch {}
+    };
+
+    const onFocus = () => checkPlanUpdated();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") checkPlanUpdated();
+    };
+
+    const id = window.setInterval(checkPlanUpdated, 5000);
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

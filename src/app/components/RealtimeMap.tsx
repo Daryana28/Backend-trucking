@@ -640,20 +640,21 @@ export default function RealtimeMap({
   }, []);
 
   const openTripReplay = useCallback((sn: string) => {
+    if (!sn) return;
     const ymd = ymdJakartaClient();
     setTripReplayData(null);
     setTripReplayErr(null);
     setTripReplayQuery("");
     setTripReplayTypeFilter("ALL");
     setTripReplaySn(sn);
-    setTripReplayFromDate((prev) => prev || ymd);
-    setTripReplayFromTime((prev) => prev || "00:00");
-    setTripReplayToDate((prev) => prev || ymd);
-    setTripReplayToTime((prev) => prev || "23:59");
-    setTripReplayDate((prev) => prev || tripReplayFromDate || ymd);
+    setTripReplayFromDate(ymd);
+    setTripReplayFromTime("00:00");
+    setTripReplayToDate(ymd);
+    setTripReplayToTime("23:59");
+    setTripReplayDate(ymd);
     setTripReplayOpen(true);
     setTripReplayRunKey((k) => k + 1);
-  }, [tripReplayFromDate]);
+  }, []);
 
   const closeTripReplay = useCallback(() => {
     setTripReplayOpen(false);
@@ -1155,7 +1156,12 @@ export default function RealtimeMap({
       const cacheKey = `${tripReplaySn}::${tripReplayDate}`;
       const cached = tripReplayCacheRef.current[cacheKey];
       const now = Date.now();
-      if (cached && now - cached.fetchedAt < 5 * 60_000) {
+      const cachedCount = Number(cached?.data?.count ?? 0);
+      const cachedTlCount = Number(cached?.data?.timelineCount ?? 0);
+      const cachedLooksEmpty =
+        !cached?.data || (cachedCount <= 0 && cachedTlCount <= 1);
+      const bypassCache = tripReplayRunKey > 0 && cachedLooksEmpty;
+      if (cached && now - cached.fetchedAt < 5 * 60_000 && !bypassCache) {
         setTripReplayErr(null);
         setTripReplayData(cached.data);
         setTripReplayLoading(false);
@@ -1870,7 +1876,11 @@ export default function RealtimeMap({
               <div className="flex items-center justify-end">
                 <button
                   type="button"
-                  onClick={() => setTripReplayRunKey((k) => k + 1)}
+                  onClick={() => {
+                    const ymd = ymdJakartaClient();
+                    setTripReplayDate(tripReplayFromDate || ymd);
+                    setTripReplayRunKey((k) => k + 1);
+                  }}
                   className="rounded-xl bg-orange-500 px-6 py-2 text-sm font-extrabold text-white shadow hover:bg-orange-600"
                   title="Show"
                 >

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 type PlanRow = {
@@ -21,7 +22,7 @@ type PlanListResponse = {
 
 
 type UploadResponse =
-  | { ok: true; count: number }
+  | { ok: true; count: number; dates?: string[] }
   | { ok: false; error?: string; errors?: string[] };
 
 // ================================
@@ -104,6 +105,7 @@ function fmtNowWIB() {
 
 export default function AdminPlanPage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const PLAN_UPDATED_KEY = "plan-updated-at";
 
   const [loading, setLoading] = useState(true);
   const [loadingUpload, setLoadingUpload] = useState(false);
@@ -262,7 +264,14 @@ export default function AdminPlanPage() {
         return;
       }
 
-      setUploadOkMsg(`Upload berhasil: ${json.count} row di-update.`);
+      const dates = Array.isArray(json.dates) ? json.dates : [];
+      const dateLabel = dates.length
+        ? ` (Tanggal: ${dates.join(", ")})`
+        : "";
+      setUploadOkMsg(`Upload berhasil: ${json.count} row di-update.${dateLabel}`);
+      try {
+        window.localStorage.setItem(PLAN_UPDATED_KEY, String(Date.now()));
+      } catch {}
       await fetchPlan();
 
       if (input) input.value = "";
@@ -379,6 +388,12 @@ export default function AdminPlanPage() {
             <div className="flex items-center gap-2">
               {uploadOkMsg ? <Badge tone="emerald">{uploadOkMsg}</Badge> : null}
               {err ? <Badge tone="red">{err}</Badge> : null}
+              <Link
+                href="/dashboard"
+                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
+              >
+                Buka Dashboard
+              </Link>
             </div>
           </div>
 

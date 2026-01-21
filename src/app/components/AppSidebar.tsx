@@ -19,7 +19,6 @@ const MENU = [
 
   // ✅ selalu tampil
   { href: "/admin/plan", label: "Plan Delivery", icon: "plan" as const },
-
 ];
 
 const GENERAL = [{ href: "/logout", label: "Logout", icon: "logout" as const }];
@@ -116,7 +115,7 @@ function Clock() {
           hour: "2-digit",
           minute: "2-digit",
           second: "2-digit",
-        })
+        }),
       );
 
     tick();
@@ -356,7 +355,7 @@ export default function AppSidebar({
 
             <div className="hidden sm:flex items-center gap-2">
               <span className="text-sm font-semibold text-slate-700 bg-blue-50 px-3 py-1.5 rounded-md border border-blue-200">
-                Delivery Tracking Monitoring
+                TRAMO
               </span>
               <span className="text-sm font-bold text-red-600 bg-red-50 px-3 py-1.5 rounded-md border border-red-200">
                 PT Indonesia Koito
