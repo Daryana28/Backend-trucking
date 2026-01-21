@@ -94,6 +94,7 @@ model PlanDaily {
   deliveryDate String   // format: YYYY-MM-DD
   destination  String
   group        String?
+  tripCount    Int      @default(0)
 
   forwardEtd   String?
   forwardEta   String?

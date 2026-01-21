@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   MapContainer,
   Marker,
@@ -500,6 +501,7 @@ export default function RealtimeMap({
   onDestFilterChange,
 }: RealtimeMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const searchParams = useSearchParams();
   // IMPORTANT: keep Leaflet map instance in a dedicated ref.
   // Do NOT pass this ref into <MapContainer>, because React may overwrite it with a DOM node.
   const leafletMapRef = useRef<any>(null);
@@ -555,12 +557,17 @@ export default function RealtimeMap({
   >("ALL");
 
   const [tripReplayRunKey, setTripReplayRunKey] = useState(0);
+  const tripReplayCacheRef = useRef<
+    Record<string, { data: any; fetchedAt: number }>
+  >({});
+  const tripReplayAbortRef = useRef<AbortController | null>(null);
 
   const lastTelemetryRef = useRef<
     Record<string, { p?: LatLng; tMs?: number; speedKmh?: number }>
   >({});
   const inFlightHistoryRef = useRef<Record<string, boolean>>({});
   const lastMatchHashRef = useRef<Record<string, string>>({});
+  const lastFocusedSnRef = useRef<string | null>(null);
 
   // realtime route controls (biar ringan)
   const ROUTE_MAX_POINTS = 140;
@@ -572,6 +579,7 @@ export default function RealtimeMap({
   const HISTORY_MAX_DRAW_POINTS = 2500;
 
   const drivers = Array.isArray(driversProp) ? driversProp : driversInternal;
+  const focusSnParam = String(searchParams.get("sn") ?? "").trim();
   const effectiveDestFilter =
     typeof destFilterProp === "string" ? destFilterProp : destFilterInternal;
 
@@ -594,6 +602,24 @@ export default function RealtimeMap({
     );
   }, [drivers, effectiveDestFilter]);
 
+  useEffect(() => {
+    if (!focusSnParam) return;
+    if (!drivers.length) return;
+    if (lastFocusedSnRef.current === focusSnParam) return;
+    const target = drivers.find(
+      (d) => String(d.driverId ?? d.id ?? "").trim() === focusSnParam,
+    );
+    if (!target || target.lat == null || target.lng == null) return;
+    lastFocusedSnRef.current = focusSnParam;
+    setSelectedSn(focusSnParam);
+    const map = leafletMapRef.current;
+    if (map) {
+      try {
+        map.flyTo({ lat: target.lat, lng: target.lng }, 14, { duration: 0.6 });
+      } catch {}
+    }
+  }, [focusSnParam, drivers]);
+
   const trackerOptions = useMemo(() => {
     // gunakan semua driver yang terlihat agar mudah dipilih
     return visibleDrivers
@@ -614,18 +640,20 @@ export default function RealtimeMap({
   }, []);
 
   const openTripReplay = useCallback((sn: string) => {
-    setTripReplaySn(sn);
     const ymd = ymdJakartaClient();
-    setTripReplayDate(ymd);
-    setTripReplayFromDate(ymd);
-    setTripReplayFromTime("00:00");
-    setTripReplayToDate(ymd);
-    setTripReplayToTime("23:59");
+    setTripReplayData(null);
+    setTripReplayErr(null);
     setTripReplayQuery("");
     setTripReplayTypeFilter("ALL");
+    setTripReplaySn(sn);
+    setTripReplayFromDate((prev) => prev || ymd);
+    setTripReplayFromTime((prev) => prev || "00:00");
+    setTripReplayToDate((prev) => prev || ymd);
+    setTripReplayToTime((prev) => prev || "23:59");
+    setTripReplayDate((prev) => prev || tripReplayFromDate || ymd);
     setTripReplayOpen(true);
     setTripReplayRunKey((k) => k + 1);
-  }, []);
+  }, [tripReplayFromDate]);
 
   const closeTripReplay = useCallback(() => {
     setTripReplayOpen(false);
@@ -1124,12 +1152,26 @@ export default function RealtimeMap({
 
     let cancelled = false;
     const run = async () => {
+      const cacheKey = `${tripReplaySn}::${tripReplayDate}`;
+      const cached = tripReplayCacheRef.current[cacheKey];
+      const now = Date.now();
+      if (cached && now - cached.fetchedAt < 5 * 60_000) {
+        setTripReplayErr(null);
+        setTripReplayData(cached.data);
+        setTripReplayLoading(false);
+        return;
+      }
       setTripReplayLoading(true);
       setTripReplayErr(null);
       try {
+        if (tripReplayAbortRef.current) {
+          tripReplayAbortRef.current.abort();
+        }
+        const controller = new AbortController();
+        tripReplayAbortRef.current = controller;
         const res = await fetch(
           `/api/gps/timeline?sn=${encodeURIComponent(tripReplaySn)}&date=${encodeURIComponent(tripReplayDate)}&maxPoints=${HISTORY_MAX_DRAW_POINTS}`,
-          { cache: "no-store" },
+          { cache: "no-store", signal: controller.signal },
         );
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}`);
@@ -1142,10 +1184,14 @@ export default function RealtimeMap({
           return;
         }
         setTripReplayData(json);
+        tripReplayCacheRef.current[cacheKey] = {
+          data: json,
+          fetchedAt: Date.now(),
+        };
 
         // also update map selection + path/stops cache for the chosen date
         setSelectedSn(tripReplaySn);
-        const cacheKey = `${tripReplaySn}::${tripReplayDate}`;
+        const histCacheKey = `${tripReplaySn}::${tripReplayDate}`;
         const pts0: HistoryPoint[] = Array.isArray(json?.points)
           ? json.points
           : [];
@@ -1156,7 +1202,7 @@ export default function RealtimeMap({
             : [];
         setHistoryBySn((prev) => ({
           ...prev,
-          [cacheKey]: {
+          [histCacheKey]: {
             points: pts0,
             stops: stops0,
             fetchedAt: Date.now(),
@@ -1180,6 +1226,7 @@ export default function RealtimeMap({
         }
       } catch (e: any) {
         if (cancelled) return;
+        if (String(e?.name) === "AbortError") return;
         setTripReplayData(null);
         setTripReplayErr(
           e?.message ? String(e.message) : "Gagal memuat trip replay",
@@ -1192,6 +1239,9 @@ export default function RealtimeMap({
     run();
     return () => {
       cancelled = true;
+      if (tripReplayAbortRef.current) {
+        tripReplayAbortRef.current.abort();
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tripReplayOpen, tripReplaySn, tripReplayDate, tripReplayRunKey]);
@@ -2024,7 +2074,128 @@ export default function RealtimeMap({
                       return acc;
                     }, []);
 
-                    const totals = deduped.reduce(
+                    const points0: any[] = Array.isArray(
+                      (tripReplayData as any)?.points,
+                    )
+                      ? (tripReplayData as any).points
+                      : [];
+                    const pointsLatLng = points0
+                      .map((p: any) => ({
+                        lat: Number(p?.lat),
+                        lng: Number(p?.lng),
+                        t: typeof p?.t === "number" ? p.t : null,
+                      }))
+                      .filter(
+                        (p: any) =>
+                          Number.isFinite(p.lat) && Number.isFinite(p.lng),
+                      );
+                    const pointsByTime = pointsLatLng.filter(
+                      (p: any) => typeof p.t === "number",
+                    );
+                    const distanceMeters = pointsLatLng.reduce(
+                      (acc: number, p: any, idx: number) => {
+                        if (idx === 0) return 0;
+                        const prev = pointsLatLng[idx - 1];
+                        return acc + haversineMeters(prev, p);
+                      },
+                      0,
+                    );
+
+                    const fallbackStart =
+                      pointsByTime[0]?.t ?? pointsLatLng[0]?.t ?? null;
+                    const fallbackEnd =
+                      pointsByTime[pointsByTime.length - 1]?.t ??
+                      pointsLatLng[pointsLatLng.length - 1]?.t ??
+                      null;
+                    const fallbackDuration =
+                      fallbackStart != null &&
+                      fallbackEnd != null &&
+                      fallbackEnd > fallbackStart
+                        ? fallbackEnd - fallbackStart
+                        : null;
+
+                    const rangeStartSec = parseJakartaLocalToSec(
+                      tripReplayFromDate,
+                      tripReplayFromTime,
+                    );
+                    const rangeEndSec = parseJakartaLocalToSec(
+                      tripReplayToDate,
+                      tripReplayToTime,
+                    );
+                    const fallbackStartSec =
+                      rangeStartSec ??
+                      (tripReplayData as any)?.startSec ??
+                      fallbackStart;
+                    const fallbackEndSec =
+                      (String(tripReplayDate ?? "") === ymdJakartaClient() &&
+                        nowSec) ||
+                      rangeEndSec ||
+                      (tripReplayData as any)?.endSec ||
+                      fallbackEnd;
+
+                    const realtimePath: LatLng[] = Array.isArray(
+                      (paths as any)?.[String(tripReplaySn ?? "")],
+                    )
+                      ? (paths as any)[String(tripReplaySn ?? "")]
+                      : [];
+                    const realtimeDistanceMeters = realtimePath.reduce(
+                      (acc: number, p: any, idx: number) => {
+                        if (idx === 0) return 0;
+                        const prev = realtimePath[idx - 1];
+                        return acc + haversineMeters(prev, p);
+                      },
+                      0,
+                    );
+
+                    const fallbackTimeline =
+                      deduped.length
+                        ? deduped
+                        : pointsLatLng.length
+                          ? [
+                              {
+                                type: "DRIVE",
+                                startSec: fallbackStart,
+                                endSec: fallbackEnd,
+                                durationSec: fallbackDuration,
+                                distanceMeters: Math.round(distanceMeters),
+                                startLabel:
+                                  fallbackStart != null
+                                    ? fmtTimeWibNoSec(fallbackStart)
+                                    : "-",
+                                endLabel:
+                                  fallbackEnd != null
+                                    ? fmtTimeWibNoSec(fallbackEnd)
+                                    : "-",
+                              },
+                            ]
+                          : realtimePath.length > 1
+                            ? [
+                                {
+                                  type: "DRIVE",
+                                  startSec: fallbackStartSec ?? null,
+                                  endSec: fallbackEndSec ?? null,
+                                  durationSec:
+                                    fallbackStartSec != null &&
+                                    fallbackEndSec != null &&
+                                    fallbackEndSec > fallbackStartSec
+                                      ? fallbackEndSec - fallbackStartSec
+                                      : null,
+                                  distanceMeters: Math.round(
+                                    realtimeDistanceMeters,
+                                  ),
+                                  startLabel:
+                                    fallbackStartSec != null
+                                      ? fmtTimeWibNoSec(fallbackStartSec)
+                                      : "-",
+                                  endLabel:
+                                    fallbackEndSec != null
+                                      ? fmtTimeWibNoSec(fallbackEndSec)
+                                      : "-",
+                                },
+                              ]
+                            : deduped;
+
+                    const totals = fallbackTimeline.reduce(
                       (acc, it) => {
                         if (it?.type === "DRIVE") {
                           acc.totalDriveSec += Number(it?.durationSec ?? 0);
@@ -2045,7 +2216,7 @@ export default function RealtimeMap({
 
                     // expose to JSX below
                     if (tripReplayData) {
-                      (tripReplayData as any).__renderTimeline = deduped;
+                      (tripReplayData as any).__renderTimeline = fallbackTimeline;
                       (tripReplayData as any).__renderTotals = totals;
                     }
                     return null;
@@ -2120,6 +2291,37 @@ export default function RealtimeMap({
                       return (
                         <div className="text-sm font-semibold text-slate-600">
                           Tidak ada hasil untuk pencarian ini.
+                        </div>
+                      );
+                    }
+
+                    const pointsCount = Array.isArray(
+                      (tripReplayData as any)?.points,
+                    )
+                      ? (tripReplayData as any).points.length
+                      : 0;
+                    const realtimePointsCount = Array.isArray(
+                      (paths as any)?.[String(tripReplaySn ?? "")],
+                    )
+                      ? (paths as any)[String(tripReplaySn ?? "")].length
+                      : 0;
+                    const hasStop = timelineItems.some(
+                      (it: any) => it?.type === "STOP",
+                    );
+                    const hasDriveDistance = timelineItems.some((it: any) => {
+                      if (it?.type !== "DRIVE") return false;
+                      return Number(it?.distanceMeters ?? 0) > 0;
+                    });
+                    const movementDetected =
+                      hasStop ||
+                      hasDriveDistance ||
+                      timelineItems.length > 1 ||
+                      pointsCount > 0 ||
+                      realtimePointsCount > 1;
+                    if (!movementDetected) {
+                      return (
+                        <div className="text-sm font-semibold text-slate-600">
+                          Belum ada data perjalanan pada tanggal ini.
                         </div>
                       );
                     }

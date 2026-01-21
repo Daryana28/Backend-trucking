@@ -172,6 +172,7 @@ function deriveStopsFromPoints(
   ptsByTime: Array<LatLngT & { t: number; speed?: number | null }>,
 ) {
   const STOP_SPEED_KMH = 1.5;
+  const STOP_DISTANCE_M = 20;
   const MIN_STOP_SEC = 180;
   const out: any[] = [];
   let inStop = false;
@@ -209,7 +210,14 @@ function deriveStopsFromPoints(
   for (let i = 0; i < ptsByTime.length; i++) {
     const p = ptsByTime[i];
     const sp = typeof p.speed === "number" ? p.speed : null;
-    const isStop = sp != null && sp <= STOP_SPEED_KMH;
+    let isStop = false;
+    if (sp != null) {
+      isStop = sp <= STOP_SPEED_KMH;
+    } else if (i > 0) {
+      const prev = ptsByTime[i - 1];
+      const dist = haversineMeters(prev, p);
+      isStop = dist <= STOP_DISTANCE_M;
+    }
     if (isStop && !inStop) {
       inStop = true;
       startIdx = i;

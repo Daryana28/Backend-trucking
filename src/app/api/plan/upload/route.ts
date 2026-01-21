@@ -36,6 +36,7 @@ export async function POST(req: Request) {
             deliveryDate: r.deliveryDate,
             destination: r.destination,
             group: r.group,
+            tripCount: r.tripCount ?? 0,
             forwardEtd: r.forwardEtd || null,
             forwardEta: r.forwardEta || null,
             reverseEtd: r.reverseEtd || null,
@@ -43,6 +44,7 @@ export async function POST(req: Request) {
           },
           update: {
             group: r.group,
+            tripCount: r.tripCount ?? 0,
             forwardEtd: r.forwardEtd || null,
             forwardEta: r.forwardEta || null,
             reverseEtd: r.reverseEtd || null,

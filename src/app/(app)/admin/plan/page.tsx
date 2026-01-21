@@ -5,6 +5,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 type PlanRow = {
   destination: string;
   group: string; // ✅ DINAMIS: ngikutin excel
+  tripCount?: number;
 
   // ✅ PLAN TIME (template): ETD/ETA di sini adalah TARGET dari Excel
   // ✅ ACTUAL ETA: nanti dihitung dari GPS (AccuGPS) saat truck sampai di customer

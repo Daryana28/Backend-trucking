@@ -3,6 +3,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
 type DriverStatus = {
   id: string;
@@ -236,6 +237,13 @@ function normalizePlate(input?: string | null) {
   return beforeDash.replace(/\s+/g, " ").toUpperCase();
 }
 
+function extractPlateFromDestination(dest?: string | null) {
+  const s = String(dest ?? "").trim();
+  if (!s) return "-";
+  const base = s.includes("(") ? s.split("(")[0]!.trim() : s;
+  return normalizePlate(base);
+}
+
 function getCustomerLabelByPlate(plate?: string | null) {
   const p = normalizePlate(plate);
   if (!p || p === "-") return "";
@@ -269,6 +277,7 @@ const PLAN_BY_DEST: Record<
 type PlanFromDbRow = {
   destination: string;
   group: string;
+  tripCount?: number | null;
   forwardEtd: string | null;
   forwardEta: string | null;
   reverseEtd: string | null;
@@ -279,6 +288,7 @@ type PlanMap = Record<
   string,
   {
     group: string;
+    tripCount: number;
     forward: { etd: string; eta: string };
     reverse: { etd: string; eta: string };
   }
@@ -584,17 +594,24 @@ function TopDelayDestinationsChart({
 function PlanLineActualBarChart({
   rows,
   badgeLabel,
+  onSelect,
 }: {
   badgeLabel: string;
-  rows: { label: string; planCount: number; completeCount: number }[];
+  rows: {
+    label: string;
+    planCount: number;
+    completeCount: number;
+    sn?: string;
+  }[];
+  onSelect?: (sn: string, label: string) => void;
 }) {
-  // ✅ dibuat lebih tinggi supaya label destinasi kebaca
-  const width = Math.max(600, rows.length * 160);
-  const height = 360;
+  // ✅ dibuat lebih tinggi + lebar supaya grafik memenuhi card
+  const width = Math.max(900, rows.length * 220);
+  const height = 320;
 
   const padX = 24;
-  const padTop = 20;
-  const padBottom = 190;
+  const padTop = 24;
+  const padBottom = 120;
 
   const innerW = width - padX * 2;
   const innerH = height - padTop - padBottom;
@@ -668,7 +685,7 @@ function PlanLineActualBarChart({
         </div>
       </div>
 
-      <div className="rounded-2xl border border-slate-200 bg-gradient-to-b from-white to-slate-50 p-3">
+      <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-white via-slate-50 to-slate-100/70 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.9),_inset_0_-12px_20px_rgba(15,23,42,0.06)]">
         {rows.length === 0 ? (
           <div className="p-3 text-sm font-medium text-slate-500">
             Belum ada data.
@@ -676,11 +693,11 @@ function PlanLineActualBarChart({
         ) : (
           <>
             <div className="overflow-x-auto">
-              <div className="min-w-full flex justify-center">
+              <div className="w-full">
                 <svg
                   viewBox={`0 0 ${width} ${height}`}
-                  className="h-[340px] w-full"
-                  style={{ maxWidth: width }}
+                  className="h-[320px] w-full"
+                  style={{ minWidth: width }}
                 >
                   {/* grid */}
                   <g>
@@ -707,6 +724,7 @@ function PlanLineActualBarChart({
                       const x = toX(i) - barW / 2;
                       const y = toY(r.completeCount);
                       const h = padTop + innerH - y;
+                      const clickable = Boolean(r.sn && onSelect);
                       return (
                         <g key={i}>
                           <rect
@@ -717,18 +735,11 @@ function PlanLineActualBarChart({
                             rx={10}
                             fill="#16A34A"
                             opacity={0.85}
+                            className={clickable ? "cursor-pointer" : undefined}
+                            onClick={() => {
+                              if (r.sn && onSelect) onSelect(r.sn, r.label);
+                            }}
                           />
-                          {/* value label on top of bar */}
-                          <text
-                            x={toX(i)}
-                            y={Math.max(padTop + 12, y - 8)}
-                            textAnchor="middle"
-                            fontSize="12"
-                            fontWeight="800"
-                            fill="#64748B"
-                          >
-                            {r.completeCount}
-                          </text>
                         </g>
                       );
                     })}
@@ -738,9 +749,10 @@ function PlanLineActualBarChart({
                   <path
                     d={lineD}
                     fill="none"
-                    stroke="#2563EB"
+                    stroke="#DC2626"
                     strokeWidth={3.5}
                     strokeLinecap="round"
+                    strokeDasharray="8 8"
                   />
                   {rows.map((r, i) => (
                     <circle
@@ -748,7 +760,7 @@ function PlanLineActualBarChart({
                       cx={toX(i)}
                       cy={toY(r.planCount)}
                       r={4.2}
-                      fill="#2563EB"
+                      fill="#DC2626"
                       opacity={0.95}
                     />
                   ))}
@@ -769,8 +781,18 @@ function PlanLineActualBarChart({
                       const lines = wrap2(r.label);
                       const x = toX(i);
                       const y = padTop + innerH + 48;
+                      const clickable = Boolean(r.sn && onSelect);
                       return (
-                        <text key={i} x={x} y={y} textAnchor="middle">
+                        <text
+                          key={i}
+                          x={x}
+                          y={y}
+                          textAnchor="middle"
+                          className={clickable ? "cursor-pointer" : undefined}
+                          onClick={() => {
+                            if (r.sn && onSelect) onSelect(r.sn, r.label);
+                          }}
+                        >
                           {lines.map((ln, idx) => (
                             <tspan key={idx} x={x} dy={idx === 0 ? 0 : 14}>
                               {ln}
@@ -792,7 +814,23 @@ function PlanLineActualBarChart({
             {/* legend */}
             <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] font-semibold text-slate-600">
               <span className="inline-flex items-center gap-2">
-                <span className="inline-block h-2.5 w-7 rounded-full bg-blue-600" />
+                <svg
+                  width="28"
+                  height="10"
+                  viewBox="0 0 28 10"
+                  className="block"
+                >
+                  <line
+                    x1="1"
+                    y1="5"
+                    x2="27"
+                    y2="5"
+                    stroke="#DC2626"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                    strokeDasharray="6 6"
+                  />
+                </svg>
                 Plan
               </span>
               <span className="inline-flex items-center gap-2">
@@ -1001,6 +1039,7 @@ function getFromTo(d: DriverStatus) {
 }
 
 export default function DashboardPage() {
+  const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
@@ -1282,6 +1321,10 @@ export default function DashboardPage() {
 
         map[p.destination] = {
           group: String(p.group ?? "").trim(),
+          tripCount:
+            typeof p.tripCount === "number" && Number.isFinite(p.tripCount)
+              ? Math.max(0, Math.floor(p.tripCount))
+              : 0,
           forward: { etd: fEtd, eta: fEta },
           reverse: { etd: rEtd, eta: rEta },
         };
@@ -1544,6 +1587,7 @@ export default function DashboardPage() {
     for (const dest of Object.keys(PLAN_BY_DEST)) {
       map[dest] = {
         group: PLAN_BY_DEST[dest].group,
+        tripCount: 0,
         forward: { etd: PLAN_BY_DEST[dest].etd, eta: PLAN_BY_DEST[dest].eta },
         reverse: { etd: PLAN_BY_DEST[dest].etd, eta: PLAN_BY_DEST[dest].eta },
       };
@@ -1577,6 +1621,25 @@ export default function DashboardPage() {
 
   // ✅ Plan vs Actual (delivery count) from realtime
   const planActualDeliveryRows = useMemo(() => {
+    const tripByGroup = new Map<string, number>();
+    for (const dest of Object.keys(effectivePlan)) {
+      const plan = effectivePlan[dest];
+      const g = String(plan?.group ?? "").trim();
+      if (!g) continue;
+      const v = Number(plan?.tripCount ?? 0);
+      const next = (tripByGroup.get(g) ?? 0) + (Number.isFinite(v) ? v : 0);
+      tripByGroup.set(g, next);
+    }
+    const tripByPlate = new Map<string, number>();
+    for (const dest of Object.keys(effectivePlan)) {
+      const plan = effectivePlan[dest];
+      const plate = extractPlateFromDestination(dest);
+      if (!plate || plate === "-") continue;
+      const v = Number(plan?.tripCount ?? 0);
+      const next = (tripByPlate.get(plate) ?? 0) + (Number.isFinite(v) ? v : 0);
+      tripByPlate.set(plate, next);
+    }
+
     const rows = activeDriversFiltered
       .map((d) => {
         const plate =
@@ -1585,16 +1648,20 @@ export default function DashboardPage() {
         const label =
           customer && customer !== "-" ? `${plate} (${customer})` : plate;
         const sn = String(d.driverId ?? d.id ?? "").trim();
+        const planCount =
+          tripByPlate.get(plate) ??
+          (customer ? tripByGroup.get(customer) ?? 0 : 0);
         return {
           label,
-          planCount: 1,
+          planCount,
           completeCount: actualBySn[sn] ? 1 : 0,
+          sn,
         };
       })
       .sort((a, b) => a.label.localeCompare(b.label));
 
     return rows;
-  }, [activeDriversFiltered, actualBySn]);
+  }, [activeDriversFiltered, actualBySn, effectivePlan]);
 
   const movingStoppedRows = useMemo(() => {
     const total = activeDriversFiltered.length;
@@ -1893,44 +1960,9 @@ export default function DashboardPage() {
 
         {/* ✅ Global Filter (dipakai untuk semua section) */}
         <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 md:items-center md:gap-4">
-            {/* Group */}
-            <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2">
-              <div className="mr-1 text-[11px] font-extrabold text-slate-600">
-                Group
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setPlanGroupFilter("ALL")}
-                  className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
-                    planGroupFilter === "ALL"
-                      ? "border-blue-200 bg-blue-50 text-blue-700"
-                      : "border-slate-200 bg-white text-slate-700"
-                  }`}
-                >
-                  All
-                </button>
-
-                {availableGroups.map((g) => (
-                  <button
-                    key={g}
-                    type="button"
-                    onClick={() => setPlanGroupFilter(g)}
-                    className={`rounded-xl border px-3 py-2 text-xs font-bold hover:bg-slate-50 ${
-                      planGroupFilter === g
-                        ? "border-blue-200 bg-blue-50 text-blue-700"
-                        : "border-slate-200 bg-white text-slate-700"
-                    }`}
-                  >
-                    {g}
-                  </button>
-                ))}
-              </div>
-            </div>
-
+          <div className="flex w-full justify-end">
             {/* Date */}
-            <div className="flex items-center justify-start gap-2 rounded-2xl border border-slate-200 bg-white p-2 md:justify-end">
+            <div className="flex w-fit items-center justify-start gap-2 rounded-2xl border border-slate-200 bg-white p-2">
               <div className="mr-1 text-[11px] font-extrabold text-slate-600">
                 Date
               </div>
@@ -1965,28 +1997,12 @@ export default function DashboardPage() {
                 className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 outline-none"
               />
             </div>
-
-            <div className="hidden" />
           </div>
-        </div>
-
-        {/* ✅ Realtime Insights */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <RealtimeMiniBarChart
-            title="Moving vs Stopped"
-            helper="Realtime"
-            rows={movingStoppedRows}
-          />
-          <RealtimeMiniBarChart
-            title="Speed Distribution"
-            helper="km/h"
-            rows={speedBucketRows}
-          />
         </div>
 
         {/* ✅ Plan vs Actual + Toggle Forward/Reverse */}
         <div className="grid grid-cols-1 gap-4">
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="rounded-2xl border border-slate-200 bg-gradient-to-b from-white via-white to-slate-50 p-5 shadow-[0_8px_24px_rgba(15,23,42,0.08),_0_2px_6px_rgba(15,23,42,0.06)] ring-1 ring-white/70 transition-all duration-150 active:translate-y-0.5 active:shadow-[0_4px_14px_rgba(15,23,42,0.08),_0_1px_4px_rgba(15,23,42,0.06)]">
             <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
               <div>
                 <div className="text-sm font-extrabold text-slate-900">
@@ -2004,116 +2020,28 @@ export default function DashboardPage() {
               <PlanLineActualBarChart
                 badgeLabel="Plan vs Actual (Delivery)"
                 rows={planActualDeliveryRows}
+                onSelect={(sn) => {
+                  router.push(`/live?sn=${encodeURIComponent(sn)}`);
+                }}
               />
             </div>
           </div>
         </div>
 
-        {/* ✅ Realtime History */}
-        <div className="grid grid-cols-1 gap-4">
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="flex items-center justify-between">
-              <div className="text-sm font-extrabold text-slate-900">
-                Trip Timeline
-              </div>
-              <div className="text-[11px] font-semibold text-slate-500">
-                {fmtDeliveryDate(deliveryDateFilter)}
-              </div>
-            </div>
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              {timelineDrivers.map((d) => {
-                const sn = String(d.driverId ?? d.id ?? "").trim();
-                const label = normalizePlate(d.plate) || sn;
-                const active = sn === timelineSn;
-                return (
-                  <button
-                    key={sn}
-                    type="button"
-                    onClick={() => {
-                      setTimelineSn(sn);
-                      setTimelineLoading(true);
-                      setTimelineItems([]);
-                    }}
-                    className={`rounded-full border px-3 py-1.5 text-xs font-bold transition-colors ${
-                      active
-                        ? "border-blue-200 bg-blue-50 text-blue-700"
-                        : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-                    }`}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="mt-4 space-y-3">
-              {(() => {
-                if (timelineLoading) {
-                  return (
-                    <div className="text-sm font-semibold text-slate-500">
-                      Loading...
-                    </div>
-                  );
-                }
-                const onlyDriveZero =
-                  timelineItems.length === 1 &&
-                  timelineItems[0]?.type === "DRIVE" &&
-                  Number(timelineItems[0]?.distanceMeters ?? 0) === 0;
-                const emptyTimeline =
-                  timelineItems.length === 0 || onlyDriveZero;
-                if (emptyTimeline) {
-                  const label =
-                    timelineDrivers.find(
-                      (d) => String(d.driverId ?? d.id ?? "") === timelineSn,
-                    )?.plate ?? timelineSn;
-                  return (
-                    <div className="rounded-xl border border-dashed border-slate-300 px-4 py-6 text-center text-sm font-semibold text-slate-600">
-                      <span className="font-extrabold text-orange-600">
-                        {normalizePlate(label)}
-                      </span>{" "}
-                      has no relevant information in the selected time period.
-                    </div>
-                  );
-                }
-                return timelineItems.map((it, idx) => {
-                  const isStop = it.type === "STOP";
-                  return (
-                    <div
-                      key={`tl-${idx}`}
-                      className="flex items-start gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2"
-                    >
-                      <div
-                        className={`mt-1 h-2.5 w-2.5 rounded-full ${
-                          isStop ? "bg-red-500" : "bg-emerald-500"
-                        }`}
-                      />
-                      <div className="min-w-0">
-                        <div className="text-xs font-semibold text-slate-600">
-                          {isStop ? "Stopped at" : "Departed at"}{" "}
-                          <span className="text-slate-900">
-                            {it.startSec
-                              ? fmtTimeHHmm(new Date(it.startSec * 1000))
-                              : "-"}
-                          </span>
-                        </div>
-                        <div className="mt-0.5 text-sm font-extrabold text-slate-900">
-                          {isStop
-                            ? `Stop for: ${fmtHm(it.durationSec)}`
-                            : `Driving for: ${fmtHm(it.durationSec)}`}
-                        </div>
-                        <div className="mt-0.5 text-[11px] font-medium text-slate-600">
-                          {isStop
-                            ? it.address || "-"
-                            : `Traveled: ${fmtKm(it.distanceMeters)}`}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                });
-              })()}
-            </div>
-          </div>
+        {/* ✅ Realtime Insights */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <RealtimeMiniBarChart
+            title="Moving vs Stopped"
+            helper="Realtime"
+            rows={movingStoppedRows}
+          />
+          <RealtimeMiniBarChart
+            title="Speed Distribution"
+            helper="km/h"
+            rows={speedBucketRows}
+          />
         </div>
+
       </div>
     </div>
   );

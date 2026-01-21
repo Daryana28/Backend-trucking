@@ -4,6 +4,7 @@ type ParsedRow = {
   deliveryDate: string; // YYYY-MM-DD
   destination: string;
   group: string;
+  tripCount: number;
   forwardEtd: string;
   forwardEta: string;
   reverseEtd: string;
@@ -41,6 +42,94 @@ function pad2(n: number) {
   return String(n).padStart(2, "0");
 }
 
+function normDate(v: any) {
+  if (v === null || v === undefined) return "";
+
+  if (v instanceof Date && !isNaN(v.getTime())) {
+    // Use local date parts to avoid shifting to previous day for WIB dates
+    const y = v.getFullYear();
+    const m = pad2(v.getMonth() + 1);
+    const d = pad2(v.getDate());
+    return `${y}-${m}-${d}`;
+  }
+
+  if (typeof v === "number" && Number.isFinite(v)) {
+    const parsed =
+      (XLSX as any)?.SSF?.parse_date_code?.(v) ??
+      null;
+    if (parsed && parsed.y && parsed.m && parsed.d) {
+      const y = parsed.y;
+      const m = pad2(parsed.m);
+      const d = pad2(parsed.d);
+      return `${y}-${m}-${d}`;
+    }
+  }
+
+  const s0 = normStr(v);
+  if (!s0) return "";
+  const s = s0.trim();
+
+  // Format: YYYY-MM-DD or YYYY/MM/DD
+  const iso = s.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})$/);
+  if (iso) {
+    const yyyy = iso[1];
+    const mm = pad2(Number(iso[2]));
+    const dd = pad2(Number(iso[3]));
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  // Format: DD/MM/YYYY or DD-MM-YYYY or DD/MM/YY
+  const dmy = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})$/);
+  if (dmy) {
+    const dd = pad2(Number(dmy[1]));
+    const mm = pad2(Number(dmy[2]));
+    let yyyy = dmy[3];
+    if (yyyy.length === 2) yyyy = `20${yyyy}`;
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  // Format: DD MMM YYYY / DD-MMM-YYYY / DD-MMM
+  const m2 = s.match(/^(\d{1,2})[\s-]([A-Za-z]{3})[\s-]?(\d{2,4})?$/);
+  if (m2) {
+    const dd = pad2(Number(m2[1]));
+    const mon = m2[2].toLowerCase();
+    const monthMap: Record<string, string> = {
+      jan: "01",
+      feb: "02",
+      mar: "03",
+      apr: "04",
+      may: "05",
+      jun: "06",
+      jul: "07",
+      aug: "08",
+      sep: "09",
+      oct: "10",
+      nov: "11",
+      dec: "12",
+      mei: "05",
+      agu: "08",
+      okt: "10",
+      des: "12",
+    };
+    const mm = monthMap[mon];
+    if (mm) {
+      let yyyy = m2[3] ?? "";
+      if (!yyyy) {
+        const parts = new Intl.DateTimeFormat("en-CA", {
+          timeZone: "Asia/Jakarta",
+          year: "numeric",
+        }).formatToParts(new Date());
+        yyyy = parts.find((p) => p.type === "year")?.value ?? "";
+      } else if (yyyy.length === 2) {
+        yyyy = `20${yyyy}`;
+      }
+      if (yyyy) return `${yyyy}-${mm}-${dd}`;
+    }
+  }
+
+  return s;
+}
+
 /**
  * Convert Excel time representations into "HH:mm"
  * Accepts:
@@ -74,7 +163,7 @@ function normTime(v: any) {
   if (!s0) return "";
 
   // trim seconds if present: "05:00:00" => "05:00"
-  const s = s0.replace(/\s+/g, "");
+  const s = s0.replace(/\s+/g, "").replace(/\./g, ":");
 
   // Match H:mm or HH:mm or HH:mm:ss
   const m = s.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
@@ -90,80 +179,66 @@ function normTime(v: any) {
   return s; // let validator catch
 }
 
+function normTrip(v: any) {
+  if (v === null || v === undefined || v === "") return 0;
+  if (typeof v === "number" && Number.isFinite(v)) {
+    return Math.max(0, Math.floor(v));
+  }
+  const s = normStr(v);
+  if (!s) return 0;
+  const n = Number(s);
+  if (!Number.isFinite(n)) return NaN;
+  return Math.max(0, Math.floor(n));
+}
+
+function extractGroupFromDestination(dest: string) {
+  const s = String(dest ?? "").trim();
+  if (!s) return "";
+  const m = s.match(/\(([^)]+)\)\s*$/);
+  if (m && m[1]) return String(m[1]).trim();
+  return "";
+}
+
 export function buildPlanTemplateXlsxBuffer() {
-  const header = [
-    [
-      "deliveryDate",
-      "destination",
-      "group",
-      "forwardEtd",
-      "forwardEta",
-      "reverseEtd",
-      "reverseEta",
-    ],
-  ];
+  const header = [["Date", "Destinasi", "ETD", "ETA", "Trip"]];
 
-  const sample = [
-    [
-      "2026-01-04",
-      "YIMM PG LOKAL PO 1",
-      "Yamaha Pulogadung Lokal",
-      "05:00",
-      "08:00",
-      "10:00",
-      "13:00",
-    ],
-    [
-      "2026-01-04",
-      "YIMM KARAWANG PO 1",
-      "Yamaha Karawang",
-      "05:00",
-      "08:00",
-      "10:00",
-      "13:00",
-    ],
-    [
-      "2026-01-04",
-      "YIMM PG EXPORT C1",
-      "Yamaha Pg export",
-      "05:00",
-      "08:00",
-      "10:00",
-      "13:00",
-    ],
-  ];
+  const rows = Object.entries(CUSTOMER_BY_PLATE)
+    .map(([plate, group]) => [`${plate} (${group})`, group])
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([destLabel]) => ["", destLabel, "", "", ""]);
 
-  const ws = XLSX.utils.aoa_to_sheet([...header, ...sample]);
+  const ws = XLSX.utils.aoa_to_sheet([...header, ...rows]);
 
   ws["!cols"] = [
     { wch: 14 },
     { wch: 28 },
     { wch: 10 },
-    { wch: 12 },
-    { wch: 12 },
-    { wch: 12 },
-    { wch: 12 },
+    { wch: 10 },
+    { wch: 8 },
   ];
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "PLAN");
 
-  // ✅ README sheet: supaya user ngerti nilai kolom `group` harus apa
+  // ✅ README sheet: petunjuk format
   const readme = XLSX.utils.aoa_to_sheet([
     ["NOTE"],
     [
-      "Kolom `group` WAJIB sama dengan grouping di Dashboard (customer label). Jika tidak sama, plan tidak akan terbaca untuk perbandingan realtime.",
+      "Isi kolom Date (bisa: YYYY-MM-DD, YYYY/MM/DD, DD/MM/YYYY, DD-MM-YYYY), ETD (HH:mm), ETA (HH:mm), dan Trip (angka). Destinasi sudah disediakan.",
     ],
     [""],
-    ["Valid group/customer:"],
-    ...VALID_GROUPS.map((g) => [g]),
+    ["Valid destinasi (ikuti template):"],
+    ...Object.entries(CUSTOMER_BY_PLATE)
+      .map(([plate, group]) => `${plate} (${group})`)
+      .sort((a, b) => a.localeCompare(b))
+      .map((v) => [v]),
     [""],
     ["Master plate → customer:"],
     ...Object.entries(CUSTOMER_BY_PLATE).map(([plate, cust]) => [plate, cust]),
     [""],
     ["Contoh:"],
     [
-      "deliveryDate=2026-01-04, destination=YIMM KARAWANG PO 1, group=Yamaha Karawang",
+      "Date=2026-01-04, Destinasi=T 9473 AB (Yamaha Karawang), ETD=05:00, ETA=08:00, Trip=3",
     ],
   ]);
   readme["!cols"] = [{ wch: 24 }, { wch: 40 }, { wch: 60 }];
@@ -194,40 +269,65 @@ export function parsePlanXlsx(ab: ArrayBuffer) {
     return { rows: [], errors: ["File kosong. Isi minimal 1 baris data."] };
   }
 
-  const required = [
-    "deliveryDate",
-    "destination",
-    "group",
-    "forwardEtd",
-    "forwardEta",
-    "reverseEtd",
-    "reverseEta",
-  ];
-
   const keys = Object.keys(json[0] ?? {});
-  for (const k of required) {
-    if (!keys.includes(k)) errors.push(`Kolom wajib tidak ada: ${k}`);
+  const hasLegacy = ["deliveryDate", "destination"].every((k) =>
+    keys.includes(k),
+  );
+  const hasSimple = ["Date", "Destinasi", "ETD", "ETA"].every((k) =>
+    keys.includes(k),
+  );
+
+  if (!hasLegacy && !hasSimple) {
+    return {
+      rows: [],
+      errors: [
+        "Kolom wajib tidak ada. Gunakan template terbaru dari tombol Download Template.",
+      ],
+    };
   }
-  if (errors.length) return { rows: [], errors };
 
   json.forEach((r, i) => {
     const line = i + 2;
 
-    const deliveryDate = normStr(r.deliveryDate);
-    const destination = normStr(r.destination);
-    const group = normalizeGroup(r.group);
+    const deliveryDate = hasLegacy
+      ? normDate(r.deliveryDate)
+      : normDate(r.Date);
+    const destination = hasLegacy
+      ? normStr(r.destination)
+      : normStr(r.Destinasi);
+    let group = hasLegacy ? normalizeGroup(r.group) : "";
 
-    const forwardEtd = normTime(r.forwardEtd);
-    const forwardEta = normTime(r.forwardEta);
-    const reverseEtd = normTime(r.reverseEtd);
-    const reverseEta = normTime(r.reverseEta);
+    const forwardEtd = hasLegacy ? normTime(r.forwardEtd) : normTime(r.ETD);
+    const forwardEta = hasLegacy ? normTime(r.forwardEta) : normTime(r.ETA);
+    const reverseEtd = hasLegacy ? normTime(r.reverseEtd) : "";
+    const reverseEta = hasLegacy ? normTime(r.reverseEta) : "";
+    const tripCount = hasLegacy ? 0 : normTrip(r.Trip);
 
-    if (!deliveryDate) errors.push(`Line ${line}: deliveryDate kosong`);
+    if (!group && destination) {
+      const inferred = extractGroupFromDestination(destination);
+      if (inferred && VALID_GROUPS.includes(inferred)) {
+        group = inferred;
+      } else if (VALID_GROUPS.includes(destination)) {
+        group = destination;
+      }
+    }
+
+    if (!deliveryDate)
+      errors.push(
+        `Line ${line}: ${hasLegacy ? "deliveryDate" : "Date"} kosong`,
+      );
     else if (!isYmd(deliveryDate))
-      errors.push(`Line ${line}: deliveryDate harus YYYY-MM-DD`);
+      errors.push(
+        `Line ${line}: ${
+          hasLegacy ? "deliveryDate" : "Date"
+        } harus YYYY-MM-DD`,
+      );
 
     if (!destination) errors.push(`Line ${line}: destination kosong`);
     if (!group) errors.push(`Line ${line}: group kosong`);
+    if (!hasLegacy && Number.isNaN(tripCount)) {
+      errors.push(`Line ${line}: Trip harus angka`);
+    }
 
     // ✅ important: group harus match customer label supaya dashboard bisa join plan vs realtime
     if (group && VALID_GROUPS.length && !VALID_GROUPS.includes(group)) {
@@ -255,6 +355,7 @@ export function parsePlanXlsx(ab: ArrayBuffer) {
       deliveryDate,
       destination,
       group,
+      tripCount: Number.isFinite(tripCount) ? tripCount : 0,
       forwardEtd,
       forwardEta,
       reverseEtd,
