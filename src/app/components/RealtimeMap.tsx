@@ -561,6 +561,8 @@ export default function RealtimeMap({
     Record<string, { data: any; fetchedAt: number }>
   >({});
   const tripReplayAbortRef = useRef<AbortController | null>(null);
+  const tripReplayRetryRef = useRef<Record<string, number>>({});
+  const tripReplayRetryTimerRef = useRef<number | null>(null);
 
   const lastTelemetryRef = useRef<
     Record<string, { p?: LatLng; tMs?: number; speedKmh?: number }>
@@ -654,6 +656,11 @@ export default function RealtimeMap({
     setTripReplayDate(ymd);
     setTripReplayOpen(true);
     setTripReplayRunKey((k) => k + 1);
+    tripReplayRetryRef.current[`${sn}::${ymd}`] = 0;
+    if (tripReplayRetryTimerRef.current) {
+      window.clearTimeout(tripReplayRetryTimerRef.current);
+      tripReplayRetryTimerRef.current = null;
+    }
   }, []);
 
   const closeTripReplay = useCallback(() => {
@@ -1189,11 +1196,30 @@ export default function RealtimeMap({
           setTripReplayErr(String(json?.error ?? "Gagal memuat trip replay"));
           return;
         }
+        const count = Number(json?.count ?? 0);
+        const tlCount = Number(json?.timelineCount ?? 0);
+        const stopsCount = Number(json?.stopsCount ?? 0);
+        const hasData = count > 1 || tlCount > 1 || stopsCount > 0;
+        if (!hasData) {
+          const retries = tripReplayRetryRef.current[cacheKey] ?? 0;
+          if (retries < 6) {
+            tripReplayRetryRef.current[cacheKey] = retries + 1;
+            setTripReplayLoading(true);
+            if (tripReplayRetryTimerRef.current) {
+              window.clearTimeout(tripReplayRetryTimerRef.current);
+            }
+            tripReplayRetryTimerRef.current = window.setTimeout(() => {
+              setTripReplayRunKey((k) => k + 1);
+            }, 1500);
+          }
+        }
         setTripReplayData(json);
-        tripReplayCacheRef.current[cacheKey] = {
-          data: json,
-          fetchedAt: Date.now(),
-        };
+        if (hasData) {
+          tripReplayCacheRef.current[cacheKey] = {
+            data: json,
+            fetchedAt: Date.now(),
+          };
+        }
 
         // also update map selection + path/stops cache for the chosen date
         setSelectedSn(tripReplaySn);
@@ -2328,6 +2354,11 @@ export default function RealtimeMap({
                       timelineItems.length > 1 ||
                       pointsCount > 0 ||
                       realtimePointsCount > 1;
+                    const retryKey = `${tripReplaySn}::${tripReplayDate}`;
+                    const retryCount = tripReplayRetryRef.current[retryKey] ?? 0;
+                    if (!movementDetected && retryCount > 0) {
+                      return null;
+                    }
                     if (!movementDetected) {
                       return (
                         <div className="text-sm font-semibold text-slate-600">

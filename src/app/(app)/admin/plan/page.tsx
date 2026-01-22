@@ -20,7 +20,6 @@ type PlanListResponse = {
   error?: string;
 };
 
-
 type UploadResponse =
   | { ok: true; count: number; dates?: string[] }
   | { ok: false; error?: string; errors?: string[] };
@@ -47,7 +46,7 @@ type AccuGpsTrackersResponse = {
 const CUSTOMER_BY_PLATE: Record<string, string> = {
   "T 9521 AB": "Yamaha Pulogadung Lokal",
   "T 9473 AB": "Yamaha Karawang",
-  "T 8854 DH": "Yamaha Pg export",
+  "T 8854 DH": "Yamaha Pulogadung export",
   "T 9508 AB": "Yamaha Karawang",
   "T 9472 AB": "Yamaha Pulogadung Lokal",
 };
@@ -77,10 +76,10 @@ function Badge({
     tone === "emerald"
       ? "border-emerald-200 bg-emerald-50 text-emerald-700"
       : tone === "red"
-      ? "border-red-200 bg-red-50 text-red-700"
-      : tone === "slate"
-      ? "border-slate-200 bg-slate-50 text-slate-700"
-      : "border-blue-200 bg-blue-50 text-blue-700";
+        ? "border-red-200 bg-red-50 text-red-700"
+        : tone === "slate"
+          ? "border-slate-200 bg-slate-50 text-slate-700"
+          : "border-blue-200 bg-blue-50 text-blue-700";
 
   return (
     <span
@@ -259,16 +258,16 @@ export default function AdminPlanPage() {
           ? [String((json as any).error)]
           : [];
         setUploadErrs(
-          errs.length ? errs : single.length ? single : ["Upload gagal."]
+          errs.length ? errs : single.length ? single : ["Upload gagal."],
         );
         return;
       }
 
       const dates = Array.isArray(json.dates) ? json.dates : [];
-      const dateLabel = dates.length
-        ? ` (Tanggal: ${dates.join(", ")})`
-        : "";
-      setUploadOkMsg(`Upload berhasil: ${json.count} row di-update.${dateLabel}`);
+      const dateLabel = dates.length ? ` (Tanggal: ${dates.join(", ")})` : "";
+      setUploadOkMsg(
+        `Upload berhasil: ${json.count} row di-update.${dateLabel}`,
+      );
       try {
         window.localStorage.setItem(PLAN_UPDATED_KEY, String(Date.now()));
       } catch {}
@@ -422,7 +421,8 @@ export default function AdminPlanPage() {
                 Realtime Trucks (AccuGPS)
               </div>
               <div className="text-xs font-medium text-slate-600">
-                Data ini harus sama dengan RealtimeMap. Plan akan dibandingkan dengan truck yang aktif di sini.
+                Data ini harus sama dengan RealtimeMap. Plan akan dibandingkan
+                dengan truck yang aktif di sini.
               </div>
             </div>
 
@@ -448,15 +448,21 @@ export default function AdminPlanPage() {
             <table className="w-full text-sm">
               <thead className="bg-slate-50 text-slate-700">
                 <tr className="border-b border-slate-200">
-                  <th className="text-left py-3 px-4 font-extrabold">Police Number</th>
-                  <th className="text-left py-3 px-4 font-extrabold">Customer</th>
+                  <th className="text-left py-3 px-4 font-extrabold">
+                    Police Number
+                  </th>
+                  <th className="text-left py-3 px-4 font-extrabold">
+                    Customer
+                  </th>
                   <th className="text-left py-3 px-4 font-extrabold">Last</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
                 {gpsPlates.map((p) => (
                   <tr key={p} className="hover:bg-slate-50">
-                    <td className="py-3 px-4 font-semibold text-slate-900">{p}</td>
+                    <td className="py-3 px-4 font-semibold text-slate-900">
+                      {p}
+                    </td>
                     <td className="py-3 px-4">
                       <Badge tone="slate">{getCustomerLabel(p)}</Badge>
                     </td>
@@ -478,7 +484,8 @@ export default function AdminPlanPage() {
           </div>
 
           <div className="mt-3 text-xs font-medium text-slate-500">
-            Catatan: ETD/ETA di Plan adalah target (template). Actual ETA akan dihitung saat truck sampai di customer (GPS).
+            Catatan: ETD/ETA di Plan adalah target (template). Actual ETA akan
+            dihitung saat truck sampai di customer (GPS).
           </div>
         </div>
 

@@ -165,6 +165,260 @@ function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
+type LatLng = { lat: number; lng: number };
+type CustomerTargetPoint = { lat: number; lng: number; radiusM?: number };
+
+const ARRIVAL_RADIUS_M = 2000;
+const ARRIVAL_COOLDOWN_MIN = 180;
+const GEO_ADDR_CACHE_TTL_MS = 10 * 60 * 1000;
+const STOP_CACHE_TTL_MS = 2 * 60 * 60 * 1000;
+
+// ✅ titik lokasi tujuan berdasarkan nama customer
+// TODO: isi lat/lng sesuai titik tujuan yang valid.
+const CUSTOMER_DEST_POINTS: Record<string, CustomerTargetPoint | null> = {
+  // Pulogadung Lokal & Export: Jl. Dr. KRT Radjiman Widyodiningrat No.23
+  // ✅ Pulogadung (Yamaha Lokal/Export)
+  "Yamaha Pulogadung Lokal": {
+    lat: -6.192072311258555,
+    lng: 106.92462603917761,
+    radiusM: 2000,
+  },
+  "Yamaha Pg export": {
+    lat: -6.192072311258555,
+    lng: 106.92462603917761,
+    radiusM: 2000,
+  },
+  // ✅ Yamaha West Java (KIIC)
+  "Yamaha Karawang": {
+    lat: -6.353639318345203,
+    lng: 107.28131289197621,
+    radiusM: 2000,
+  },
+};
+
+// ✅ fallback by address keywords (plate-based)
+const TARGET_ADDRESS_KEYWORDS_BY_PLATE: Record<string, string[]> = {
+  "T 8854": [
+    "radjiman",
+    "widyodiningrat",
+    "rw terate",
+    "cakung",
+    "jakarta timur",
+    "rawa terate",
+    "raya bekasi",
+    "bekasi",
+  ],
+  "T 9472": [
+    "radjiman",
+    "widyodiningrat",
+    "rw terate",
+    "cakung",
+    "jakarta timur",
+    "rawa terate",
+    "raya bekasi",
+    "bekasi",
+  ],
+  "T 9473": [
+    "permata",
+    "permata i",
+    "puseurjaya",
+    "telukjambe",
+    "karawang",
+    "kiic",
+    "bb 1",
+    "j7wm",
+  ],
+  "T 9508": [
+    "permata",
+    "permata i",
+    "puseurjaya",
+    "telukjambe",
+    "karawang",
+    "kiic",
+    "bb 1",
+    "j7wm",
+  ],
+  "T 9521": [
+    "swadaya",
+    "rawa terate",
+    "rw terate",
+    "cakung",
+    "jakarta timur",
+    "raya bekasi",
+    "bekasi",
+  ],
+};
+
+const TARGET_ADDRESS_KEYWORDS_BY_CUSTOMER: Record<string, string[]> = {
+  "Yamaha Pulogadung Lokal": [
+    "radjiman",
+    "widyodiningrat",
+    "rw terate",
+    "cakung",
+    "jakarta timur",
+    "rawa terate",
+    "raya bekasi",
+    "bekasi",
+  ],
+  "Yamaha Pg export": [
+    "radjiman",
+    "widyodiningrat",
+    "rw terate",
+    "cakung",
+    "jakarta timur",
+    "rawa terate",
+    "raya bekasi",
+    "bekasi",
+  ],
+  "Yamaha Karawang": [
+    "permata",
+    "permata i",
+    "puseurjaya",
+    "telukjambe",
+    "karawang",
+    "kiic",
+    "bb 1",
+    "j7wm",
+  ],
+};
+
+const MIN_KEYWORD_HITS_BY_PLATE: Record<string, number> = {
+  "T 8854": 1,
+  "T 9472": 1,
+  "T 9473": 1,
+  "T 9508": 1,
+  "T 9521": 1,
+};
+
+const MIN_KEYWORD_HITS_BY_CUSTOMER: Record<string, number> = {
+  "Yamaha Pulogadung Lokal": 1,
+  "Yamaha Pg export": 1,
+  "Yamaha Karawang": 1,
+};
+
+function haversineMeters(a: LatLng, b: LatLng) {
+  const R = 6371000;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const h =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+function normalizeAddress(s?: string | null) {
+  return String(s ?? "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function addressObjectToString(addr: any) {
+  if (!addr || typeof addr !== "object") return "";
+  const parts = [
+    addr.road,
+    addr.neighbourhood,
+    addr.suburb,
+    addr.village,
+    addr.town,
+    addr.city,
+    addr.county,
+    addr.state,
+    addr.postcode,
+    addr.country,
+  ]
+    .map((v) => String(v ?? "").trim())
+    .filter(Boolean);
+  return parts.join(", ");
+}
+
+function takeTopStops(stops: any[], n: number) {
+  if (!Array.isArray(stops) || !stops.length) return [];
+  const ranked = [...stops]
+    .map((s) => ({
+      lat: typeof s?.lat === "number" ? s.lat : null,
+      lng: typeof s?.lng === "number" ? s.lng : null,
+      durationSec: Number(s?.durationSec ?? 0) || 0,
+    }))
+    .filter((s) => typeof s.lat === "number" && typeof s.lng === "number")
+    .sort((a, b) => b.durationSec - a.durationSec);
+  return ranked.slice(0, n).map((s) => ({ lat: s.lat, lng: s.lng }));
+}
+
+const ADDRESS_STOPWORDS = new Set([
+  "jl",
+  "jalan",
+  "dr",
+  "krt",
+  "rt",
+  "rw",
+  "no",
+  "kec",
+  "kecamatan",
+  "kab",
+  "kabupaten",
+  "kota",
+  "daerah",
+  "khusus",
+  "ibukota",
+  "indonesia",
+  "jawa",
+  "barat",
+]);
+
+function addressTokens(s?: string | null) {
+  const norm = normalizeAddress(s);
+  if (!norm) return [];
+  return norm
+    .split(" ")
+    .map((t) => t.trim())
+    .filter(Boolean)
+    .filter((t) => !ADDRESS_STOPWORDS.has(t))
+    .filter((t) => t.length >= 4);
+}
+
+function isAddressMatchByKeywords(
+  addrRaw: string,
+  keywords: string[],
+  minHits: number,
+) {
+  const addrNorm = normalizeAddress(addrRaw);
+  if (!addrNorm || !keywords.length) return false;
+  // match if at least 2 keywords appear (or 1 if only 1 keyword)
+  const hits = keywords.filter((k) =>
+    addrNorm.includes(normalizeAddress(k)),
+  ).length;
+  const need = Math.max(1, Math.min(minHits || 1, keywords.length));
+  return hits >= need;
+}
+
+function plateKeyForAddress(plate?: string | null) {
+  const p = normalizePlate(plate);
+  if (!p) return "";
+  const parts = p.split(" ").filter(Boolean);
+  if (parts.length >= 2) return `${parts[0]} ${parts[1]}`;
+  return p;
+}
+
+function isArrivedByPosition(
+  current: { lat: number | null; lng: number | null },
+  target: CustomerTargetPoint | null | undefined,
+) {
+  if (!target || current.lat == null || current.lng == null) return false;
+  const dist = haversineMeters(
+    { lat: current.lat, lng: current.lng },
+    { lat: target.lat, lng: target.lng },
+  );
+  const radius = Number.isFinite(target.radiusM)
+    ? Math.max(10, Number(target.radiusM))
+    : ARRIVAL_RADIUS_M;
+  return dist <= radius;
+}
+
 function todayWIB() {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Jakarta",
@@ -720,26 +974,130 @@ function PlanLineActualBarChart({
                   {/* bars (actual complete) */}
                   <g>
                     {rows.map((r, i) => {
-                      if (!r.completeCount) return null;
+                      const value = Math.max(0, r.completeCount ?? 0);
                       const x = toX(i) - barW / 2;
-                      const y = toY(r.completeCount);
+                      const y = toY(value);
                       const h = padTop + innerH - y;
+                      const barH = value === 0 ? 8 : Math.max(0, h);
+                      const barY = value === 0 ? padTop + innerH - barH : y;
                       const clickable = Boolean(r.sn && onSelect);
+                      const barOpacity = value === 0 ? 0.6 : 0.85;
                       return (
                         <g key={i}>
-                          <rect
-                            x={x}
-                            y={y}
-                            width={barW}
-                            height={Math.max(0, h)}
-                            rx={10}
-                            fill="#16A34A"
-                            opacity={0.85}
-                            className={clickable ? "cursor-pointer" : undefined}
-                            onClick={() => {
-                              if (r.sn && onSelect) onSelect(r.sn, r.label);
-                            }}
-                          />
+                          {value >= 3 ? (
+                            <>
+                              <rect
+                                x={x}
+                                y={barY}
+                                width={barW}
+                                height={barH / 3}
+                                rx={10}
+                                fill="#FACC15"
+                                opacity={barOpacity}
+                                className={
+                                  clickable ? "cursor-pointer" : undefined
+                                }
+                                onClick={() => {
+                                  if (r.sn && onSelect) onSelect(r.sn, r.label);
+                                }}
+                              />
+                              <rect
+                                x={x}
+                                y={barY + barH / 3}
+                                width={barW}
+                                height={barH / 3}
+                                rx={10}
+                                fill="#2563EB"
+                                opacity={barOpacity}
+                                className={
+                                  clickable ? "cursor-pointer" : undefined
+                                }
+                                onClick={() => {
+                                  if (r.sn && onSelect) onSelect(r.sn, r.label);
+                                }}
+                              />
+                              <rect
+                                x={x}
+                                y={barY + (2 * barH) / 3}
+                                width={barW}
+                                height={barH / 3}
+                                rx={10}
+                                fill="#16A34A"
+                                opacity={barOpacity}
+                                className={
+                                  clickable ? "cursor-pointer" : undefined
+                                }
+                                onClick={() => {
+                                  if (r.sn && onSelect) onSelect(r.sn, r.label);
+                                }}
+                              />
+                            </>
+                          ) : value >= 2 ? (
+                            <>
+                              <rect
+                                x={x}
+                                y={barY}
+                                width={barW}
+                                height={barH / 2}
+                                rx={10}
+                                fill="#2563EB"
+                                opacity={barOpacity}
+                                className={
+                                  clickable ? "cursor-pointer" : undefined
+                                }
+                                onClick={() => {
+                                  if (r.sn && onSelect) onSelect(r.sn, r.label);
+                                }}
+                              />
+                              <rect
+                                x={x}
+                                y={barY + barH / 2}
+                                width={barW}
+                                height={barH / 2}
+                                rx={10}
+                                fill="#16A34A"
+                                opacity={barOpacity}
+                                className={
+                                  clickable ? "cursor-pointer" : undefined
+                                }
+                                onClick={() => {
+                                  if (r.sn && onSelect) onSelect(r.sn, r.label);
+                                }}
+                              />
+                            </>
+                          ) : (
+                            <rect
+                              x={x}
+                              y={barY}
+                              width={barW}
+                              height={barH}
+                              rx={10}
+                              fill="#16A34A"
+                              opacity={barOpacity}
+                              className={
+                                clickable ? "cursor-pointer" : undefined
+                              }
+                              onClick={() => {
+                                if (r.sn && onSelect) onSelect(r.sn, r.label);
+                              }}
+                            />
+                          )}
+                          <text
+                            x={toX(i)}
+                            y={barY - 6}
+                            textAnchor="middle"
+                            fontSize="11"
+                            fontWeight="800"
+                            fill={
+                              value >= 3
+                                ? "#854D0E"
+                                : value >= 2
+                                  ? "#1D4ED8"
+                                  : "#166534"
+                            }
+                          >
+                            {value}
+                          </text>
                         </g>
                       );
                     })}
@@ -1046,7 +1404,7 @@ export default function DashboardPage() {
   const DASHBOARD_LATEST_CACHE_KEY = "dashboard-latest-cache-v1";
   const MAP_CACHE_KEY = "realtime-map-cache-v1";
   const DASHBOARD_TIMELINE_CACHE_KEY = "dashboard-timeline-cache-v1";
-  const DASHBOARD_ACTUAL_CACHE_KEY = "dashboard-actual-cache-v1";
+  const DASHBOARD_ACTUAL_CACHE_KEY = "dashboard-actual-cache-v3";
   const PLAN_UPDATED_KEY = "plan-updated-at";
   const lastPlanUpdatedRef = useRef(0);
   const deliveryDateRef = useRef<string>(todayWIB());
@@ -1066,7 +1424,29 @@ export default function DashboardPage() {
   const timelineCacheRef = useRef<
     Record<string, Record<string, TimelineCacheEntry>>
   >({});
-  const actualCacheRef = useRef<Record<string, Record<string, boolean>>>({});
+  const actualCacheRef = useRef<
+    Record<
+      string,
+      {
+        counts: Record<string, number>;
+        inside: Record<string, boolean>;
+        lastArrivalMs: Record<string, number>;
+      }
+    >
+  >({});
+  const stopCacheRef = useRef<
+    Record<
+      string,
+      Record<
+        string,
+        {
+          points: Array<{ lat: number; lng: number }>;
+          fetchedAt: number;
+        }
+      >
+    >
+  >({});
+  const addrCacheRef = useRef<Record<string, { addr: string; ts: number }>>({});
 
   // ✅ hanya yang masih progress (belum complete) + ada posisi
   // NOTE: didefinisikan lebih awal karena dipakai oleh memo lain (activePlateSet/activeDestSet)
@@ -1097,12 +1477,52 @@ export default function DashboardPage() {
     );
   }, [latest, planGroupFilter]);
 
+  const fallbackDrivers = useMemo(() => {
+    return Object.keys(CUSTOMER_BY_PLATE).map((plate) => ({
+      id: plate,
+      driverId: plate,
+      lat: null,
+      lng: null,
+      heading: null,
+      direction: null,
+      origin: null,
+      destination: null,
+      plate,
+      etdTime: null,
+      etaTime: null,
+      isFinished: false,
+      speed: null,
+      updatedAt: new Date().toISOString(),
+      deliveryDate: deliveryDateFilter ?? todayWIB(),
+      driver: { name: plate, phone: null },
+    })) as DriverStatus[];
+  }, [deliveryDateFilter]);
+
+  const driversForActual = useMemo(() => {
+    return activeDriversFiltered.length
+      ? activeDriversFiltered
+      : fallbackDrivers;
+  }, [activeDriversFiltered, fallbackDrivers]);
+
   const [historyRows, setHistoryRows] = useState<HistoryRow[]>([]);
   // stop summary removed
   const [timelineSn, setTimelineSn] = useState<string>("");
   const [timelineItems, setTimelineItems] = useState<any[]>([]);
   const [timelineLoading, setTimelineLoading] = useState(false);
-  const [actualBySn, setActualBySn] = useState<Record<string, boolean>>({});
+  const [actualBySn, setActualBySn] = useState<Record<string, number>>({});
+  const [arrivalDebug, setArrivalDebug] = useState<
+    Array<{
+      sn: string;
+      plate: string;
+      customer: string;
+      lat: number | null;
+      lng: number | null;
+      distM: number | null;
+      insideByGeo: boolean;
+      addrMatch: boolean;
+      insideFinal: boolean;
+    }>
+  >([]);
 
   useEffect(() => {
     try {
@@ -1135,9 +1555,9 @@ export default function DashboardPage() {
       }
     } catch {}
     try {
-      const rawActual = window.sessionStorage.getItem(
-        DASHBOARD_ACTUAL_CACHE_KEY,
-      );
+      const rawActual =
+        window.localStorage.getItem(DASHBOARD_ACTUAL_CACHE_KEY) ??
+        window.sessionStorage.getItem(DASHBOARD_ACTUAL_CACHE_KEY);
       if (rawActual) {
         const parsed = JSON.parse(rawActual);
         if (parsed && typeof parsed === "object") {
@@ -1145,9 +1565,17 @@ export default function DashboardPage() {
         }
       }
       const day = deliveryDateFilter ?? todayWIB();
-      const cachedActual = actualCacheRef.current?.[day];
-      if (cachedActual && Object.keys(cachedActual).length) {
-        setActualBySn(cachedActual);
+      const cached = actualCacheRef.current?.[day] ?? null;
+      if (cached?.counts && Object.keys(cached.counts).length) {
+        setActualBySn(cached.counts);
+      } else if (cached && typeof cached === "object") {
+        // backward compat: boolean map -> count map
+        const legacy: Record<string, boolean> = cached as any;
+        const counts: Record<string, number> = {};
+        for (const k of Object.keys(legacy)) {
+          if (legacy[k]) counts[k] = 1;
+        }
+        if (Object.keys(counts).length) setActualBySn(counts);
       }
     } catch {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1155,9 +1583,10 @@ export default function DashboardPage() {
 
   useEffect(() => {
     const day = deliveryDateFilter ?? todayWIB();
-    const cachedActual = actualCacheRef.current?.[day];
-    if (cachedActual && Object.keys(cachedActual).length) {
-      setActualBySn((prev) => ({ ...cachedActual, ...prev }));
+    const cached = actualCacheRef.current?.[day] ?? null;
+    const counts = cached?.counts ?? null;
+    if (counts && Object.keys(counts).length) {
+      setActualBySn((prev) => ({ ...counts, ...prev }));
     }
   }, [deliveryDateFilter]);
 
@@ -1389,11 +1818,7 @@ export default function DashboardPage() {
     const checkPlanUpdated = () => {
       try {
         const v = Number(window.localStorage.getItem(PLAN_UPDATED_KEY) ?? 0);
-        if (
-          Number.isFinite(v) &&
-          v > 0 &&
-          v > lastPlanUpdatedRef.current
-        ) {
+        if (Number.isFinite(v) && v > 0 && v > lastPlanUpdatedRef.current) {
           lastPlanUpdatedRef.current = v;
           fetchPlan(deliveryDateRef.current);
         }
@@ -1443,61 +1868,201 @@ export default function DashboardPage() {
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
-      if (!timelineDrivers.length) {
-        setActualBySn({});
+      const day = deliveryDateFilter ?? todayWIB();
+      const cached = actualCacheRef.current?.[day] ?? {
+        counts: {},
+        inside: {},
+        lastArrivalMs: {},
+      };
+      const nextCounts: Record<string, number> = { ...cached.counts };
+      const nextInside: Record<string, boolean> = { ...cached.inside };
+      const nextLastArrivalMs: Record<string, number> = {
+        ...cached.lastArrivalMs,
+      };
+
+      if (!driversForActual.length) {
+        if (!cancelled) setActualBySn(nextCounts);
         return;
       }
-      const day = deliveryDateFilter ?? todayWIB();
-      const cachedActual = actualCacheRef.current?.[day] ?? {};
-      const next: Record<string, boolean> = { ...cachedActual };
-      await Promise.all(
-        timelineDrivers.map(async (d) => {
+
+      const dayYmd = deliveryDateFilter ?? todayWIB();
+      const yesterday = yesterdayWIB();
+      const addrLookups = await Promise.all(
+        driversForActual.map(async (d) => {
           const sn = String(d.driverId ?? d.id ?? "").trim();
-          if (!sn) return;
-          try {
-            const res = await fetch(
-              `/api/gps/timeline?sn=${encodeURIComponent(sn)}&date=${encodeURIComponent(
-                day,
-              )}`,
-              { cache: "no-store" },
-            );
-            if (!res.ok) return;
-            const json = await res.json();
-            const tl: any[] = Array.isArray(json?.timeline)
-              ? json.timeline
-              : [];
-            const { hasRelevant, hasDrive } = analyzeTimelineItems(tl);
-            const computed = hasRelevant && hasDrive;
-            if (cachedActual[sn] && !computed) {
-              next[sn] = true;
-            } else {
-              next[sn] = computed;
-            }
-          } catch {}
+          if (!sn) return { sn, addrMatch: false, inside: false };
+
+          const customer = getCustomerLabelByPlate(d.plate);
+          const target = CUSTOMER_DEST_POINTS[customer] ?? null;
+          const insideByGeo = isArrivedByPosition(
+            { lat: d.lat, lng: d.lng },
+            target,
+          );
+          const distM =
+            target && d.lat != null && d.lng != null
+              ? haversineMeters(
+                  { lat: d.lat, lng: d.lng },
+                  { lat: target.lat, lng: target.lng },
+                )
+              : null;
+
+          // fallback: stop points from timeline (only for non-today)
+          let insideByStop = false;
+          let stopHitCount = 0;
+          if (!isToday) {
+            try {
+              const stopDayCache = stopCacheRef.current[dayYmd] ?? {};
+              const cachedStop = stopDayCache[sn];
+              const now = Date.now();
+              let stopPoints = cachedStop?.points ?? [];
+              const stale =
+                !cachedStop || now - cachedStop.fetchedAt > STOP_CACHE_TTL_MS;
+
+              if (stale) {
+                const res = await fetch(
+                  `/api/gps/timeline?sn=${encodeURIComponent(
+                    sn,
+                  )}&date=${encodeURIComponent(dayYmd)}&maxPoints=2500`,
+                  { cache: "no-store" },
+                );
+                if (res.ok) {
+                  const json = await res.json();
+                  const stops = Array.isArray(json?.stops) ? json.stops : [];
+                  stopPoints = takeTopStops(stops, 3);
+                  stopCacheRef.current = {
+                    ...stopCacheRef.current,
+                    [dayYmd]: {
+                      ...stopDayCache,
+                      [sn]: { points: stopPoints, fetchedAt: now },
+                    },
+                  };
+                }
+              }
+
+              // fallback to yesterday if selected day has none
+              if (!stopPoints.length && dayYmd !== yesterday) {
+                const yCache = stopCacheRef.current[yesterday] ?? {};
+                const yCached = yCache[sn];
+                let yPoints = yCached?.points ?? [];
+                const yStale =
+                  !yCached || now - yCached.fetchedAt > STOP_CACHE_TTL_MS;
+                if (yStale) {
+                  const resY = await fetch(
+                    `/api/gps/timeline?sn=${encodeURIComponent(
+                      sn,
+                    )}&date=${encodeURIComponent(yesterday)}&maxPoints=2500`,
+                    { cache: "no-store" },
+                  );
+                  if (resY.ok) {
+                    const jsonY = await resY.json();
+                    const stopsY = Array.isArray(jsonY?.stops)
+                      ? jsonY.stops
+                      : [];
+                    yPoints = takeTopStops(stopsY, 3);
+                    stopCacheRef.current = {
+                      ...stopCacheRef.current,
+                      [yesterday]: {
+                        ...yCache,
+                        [sn]: { points: yPoints, fetchedAt: now },
+                      },
+                    };
+                  }
+                }
+                stopPoints = stopPoints.length ? stopPoints : yPoints;
+              }
+
+              if (target && stopPoints.length) {
+                stopHitCount = stopPoints.filter((p) => {
+                  const dist = haversineMeters(
+                    { lat: p.lat, lng: p.lng },
+                    { lat: target.lat, lng: target.lng },
+                  );
+                  const radius = target?.radiusM ?? ARRIVAL_RADIUS_M;
+                  return dist <= radius;
+                }).length;
+                insideByStop = stopHitCount > 0;
+              }
+            } catch {}
+          }
+
+          return {
+            sn,
+            addrMatch: false,
+            inside: insideByGeo || insideByStop,
+            stopHitCount,
+            debug: {
+              sn,
+              plate: normalizePlate(d.plate) || "-",
+              customer,
+              lat: d.lat ?? null,
+              lng: d.lng ?? null,
+              distM,
+              insideByGeo: insideByGeo || insideByStop,
+              addrMatch: false,
+              insideFinal: insideByGeo || insideByStop,
+            },
+          };
         }),
       );
-      if (!cancelled) {
-        setActualBySn(next);
-        actualCacheRef.current = {
-          ...actualCacheRef.current,
-          [day]: next,
-        };
-        try {
-          window.sessionStorage.setItem(
-            DASHBOARD_ACTUAL_CACHE_KEY,
-            JSON.stringify(actualCacheRef.current),
-          );
-        } catch {}
+
+      const debugRows: typeof arrivalDebug = [];
+      for (const r of addrLookups) {
+        const sn = r.sn;
+        if (!sn) continue;
+        const inside = r.inside;
+        const wasInside = Boolean(nextInside[sn]);
+        const curCount = nextCounts[sn] ?? 0;
+
+        // ✅ jika sudah di dalam saat pertama load, isi minimal 1
+        if (inside && curCount === 0) {
+          nextCounts[sn] = 1;
+          nextLastArrivalMs[sn] = nextLastArrivalMs[sn] ?? Date.now();
+        }
+
+        if (inside && !wasInside) {
+          const nowMs = Date.now();
+          const lastMs = Number(nextLastArrivalMs[sn] ?? 0);
+          const cooldownMs = ARRIVAL_COOLDOWN_MIN * 60 * 1000;
+          if (!lastMs || nowMs - lastMs >= cooldownMs) {
+            nextCounts[sn] = (nextCounts[sn] ?? 0) + 1;
+            nextLastArrivalMs[sn] = nowMs;
+          }
+        }
+        if (
+          typeof (r as any).stopHitCount === "number" &&
+          (r as any).stopHitCount > 0
+        ) {
+          const next = Math.max(nextCounts[sn] ?? 0, (r as any).stopHitCount);
+          if (next > (nextCounts[sn] ?? 0)) nextCounts[sn] = next;
+        }
+        nextInside[sn] = inside;
+        if (r.debug) debugRows.push(r.debug);
       }
+
+      if (cancelled) return;
+      setActualBySn(nextCounts);
+      setArrivalDebug(debugRows);
+      actualCacheRef.current = {
+        ...actualCacheRef.current,
+        [day]: {
+          counts: nextCounts,
+          inside: nextInside,
+          lastArrivalMs: nextLastArrivalMs,
+        },
+      };
+      try {
+        window.localStorage.setItem(
+          DASHBOARD_ACTUAL_CACHE_KEY,
+          JSON.stringify(actualCacheRef.current),
+        );
+      } catch {}
     };
 
     run();
-    const id = window.setInterval(run, 60000);
     return () => {
       cancelled = true;
-      window.clearInterval(id);
     };
-  }, [timelineDrivers, deliveryDateFilter]);
+  }, [driversForActual, deliveryDateFilter]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1512,9 +2077,6 @@ export default function DashboardPage() {
       if (cached?.items?.length) {
         setTimelineItems(cached.items);
         setTimelineLoading(false);
-        if (cached.hasRelevant && cached.hasDrive) {
-          setActualBySn((prev) => ({ ...prev, [timelineSn]: true }));
-        }
       } else {
         setTimelineItems([]);
         setTimelineLoading(true);
@@ -1588,23 +2150,6 @@ export default function DashboardPage() {
             window.sessionStorage.setItem(
               DASHBOARD_TIMELINE_CACHE_KEY,
               JSON.stringify(timelineCacheRef.current),
-            );
-          } catch {}
-        }
-        if (hasRelevant && hasDrive) {
-          const updated = {
-            ...(actualCacheRef.current?.[day] ?? {}),
-            [timelineSn]: true,
-          };
-          actualCacheRef.current = {
-            ...actualCacheRef.current,
-            [day]: updated,
-          };
-          setActualBySn((prev) => ({ ...prev, [timelineSn]: true }));
-          try {
-            window.sessionStorage.setItem(
-              DASHBOARD_ACTUAL_CACHE_KEY,
-              JSON.stringify(actualCacheRef.current),
             );
           } catch {}
         }
@@ -1698,7 +2243,7 @@ export default function DashboardPage() {
       tripByPlate.set(plate, next);
     }
 
-    const rows = activeDriversFiltered
+    const rows = driversForActual
       .map((d) => {
         const plate =
           normalizePlate(d.plate) || String(d.driverId ?? d.id ?? "");
@@ -1708,18 +2253,18 @@ export default function DashboardPage() {
         const sn = String(d.driverId ?? d.id ?? "").trim();
         const planCount =
           tripByPlate.get(plate) ??
-          (customer ? tripByGroup.get(customer) ?? 0 : 0);
+          (customer ? (tripByGroup.get(customer) ?? 0) : 0);
         return {
           label,
           planCount,
-          completeCount: actualBySn[sn] ? 1 : 0,
+          completeCount: actualBySn[sn] ?? 0,
           sn,
         };
       })
       .sort((a, b) => a.label.localeCompare(b.label));
 
     return rows;
-  }, [activeDriversFiltered, actualBySn, effectivePlan]);
+  }, [driversForActual, actualBySn, effectivePlan]);
 
   const movingStoppedRows = useMemo(() => {
     const total = activeDriversFiltered.length;
@@ -2083,6 +2628,31 @@ export default function DashboardPage() {
                 }}
               />
             </div>
+
+            {typeof window !== "undefined" &&
+            new URLSearchParams(window.location.search).get("debugArrival") ===
+              "1" ? (
+              <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+                <div className="mb-2 font-extrabold text-slate-900">
+                  Arrival Debug
+                </div>
+                {arrivalDebug.length === 0 ? (
+                  <div>Belum ada data arrival debug.</div>
+                ) : (
+                  <div className="space-y-1">
+                    {arrivalDebug.map((r) => (
+                      <div key={r.sn}>
+                        {r.plate} • {r.customer} • {r.lat?.toFixed(4)},{" "}
+                        {r.lng?.toFixed(4)} • dist{" "}
+                        {r.distM ? Math.round(r.distM) : "-"}m • geo{" "}
+                        {String(r.insideByGeo)} • addr {String(r.addrMatch)} •
+                        final {String(r.insideFinal)}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -2099,7 +2669,6 @@ export default function DashboardPage() {
             rows={speedBucketRows}
           />
         </div>
-
       </div>
     </div>
   );
