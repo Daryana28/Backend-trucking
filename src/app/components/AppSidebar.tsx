@@ -355,7 +355,7 @@ export default function AppSidebar({
 
             <div className="hidden sm:flex items-center gap-2">
               <span className="text-sm font-semibold text-slate-700 bg-blue-50 px-3 py-1.5 rounded-md border border-blue-200">
-                TRAMO
+                Delivery Tracking & Monitoring
               </span>
               <span className="text-sm font-bold text-red-600 bg-red-50 px-3 py-1.5 rounded-md border border-red-200">
                 PT Indonesia Koito

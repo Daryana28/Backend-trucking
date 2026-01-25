@@ -176,7 +176,13 @@ export default function LoginPage() {
                 </div>
               )}
 
-              <div className="mt-6 space-y-4">
+              <form
+                className="mt-6 space-y-4"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleLogin();
+                }}
+              >
                 {/* USERNAME */}
                 <div>
                   <label className="mb-2 block text-xs font-bold text-slate-600">
@@ -218,7 +224,7 @@ export default function LoginPage() {
 
                 {/* LOGIN BUTTON */}
                 <button
-                  onClick={handleLogin}
+                  type="submit"
                   disabled={loading}
                   className="mt-2 h-12 w-full rounded-xl bg-[#133E87] text-sm font-extrabold text-white shadow-sm transition hover:bg-[#0f3372] active:scale-[0.99] disabled:cursor-not-allowed disabled:bg-slate-300"
                 >
@@ -256,7 +262,7 @@ export default function LoginPage() {
                     Lupa Password?
                   </button>
                 </div>
-              </div>
+              </form>
 
               <div className="mt-6 border-t border-slate-200 pt-4 text-center text-[11px] font-semibold text-slate-400">
                 Secure access • Delivery Monitoring System

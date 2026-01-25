@@ -81,6 +81,49 @@ function fmtDateWIB(iso?: string | null) {
   });
 }
 
+function fmtTimeWibFromSec(sec?: number | null) {
+  if (typeof sec !== "number" || !Number.isFinite(sec)) return "-";
+  const d = new Date(sec * 1000);
+  if (Number.isNaN(d.getTime())) return "-";
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Jakarta",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(d);
+}
+
+function buildTripWindowsFromStops(
+  stops: any[],
+  gapSec = 4 * 3600,
+): Array<{ startSec: number; endSec: number }> {
+  const items = (Array.isArray(stops) ? stops : [])
+    .filter((s) => s?.isNear && typeof s?.startSec === "number")
+    .map((s) => ({
+      startSec: s.startSec as number,
+      endSec: typeof s?.endSec === "number" ? (s.endSec as number) : s.startSec,
+    }))
+    .sort((a, b) => a.startSec - b.startSec);
+  if (!items.length) return [];
+  const trips: Array<{ startSec: number; endSec: number }> = [];
+  let curStart = items[0].startSec;
+  let curEnd = items[0].endSec;
+  let lastStart = items[0].startSec;
+  for (let i = 1; i < items.length; i += 1) {
+    const it = items[i];
+    if (it.startSec - lastStart >= gapSec) {
+      trips.push({ startSec: curStart, endSec: curEnd });
+      curStart = it.startSec;
+      curEnd = it.endSec;
+      lastStart = it.startSec;
+    } else {
+      curEnd = Math.max(curEnd, it.endSec);
+      lastStart = it.startSec;
+    }
+  }
+  trips.push({ startSec: curStart, endSec: curEnd });
+  return trips;
+}
+
 function fmtDeliveryDate(deliveryDate?: string | null) {
   if (!deliveryDate) return "-";
   const s = String(deliveryDate).trim();
@@ -169,7 +212,8 @@ type LatLng = { lat: number; lng: number };
 type CustomerTargetPoint = { lat: number; lng: number; radiusM?: number };
 
 const ARRIVAL_RADIUS_M = 2000;
-const ARRIVAL_COOLDOWN_MIN = 180;
+const HISTORY_STOP_RADIUS_M = 1000;
+const ARRIVAL_COOLDOWN_MIN = 300;
 const GEO_ADDR_CACHE_TTL_MS = 10 * 60 * 1000;
 const STOP_CACHE_TTL_MS = 2 * 60 * 60 * 1000;
 
@@ -195,6 +239,17 @@ const CUSTOMER_DEST_POINTS: Record<string, CustomerTargetPoint | null> = {
     radiusM: 2000,
   },
 };
+
+// ✅ per-plate override target (higher priority than customer target)
+const PLATE_TARGET_POINTS: Record<string, CustomerTargetPoint> = {
+  "T 8854 DH": { lat: -6.19123, lng: 106.92768, radiusM: 5000 },
+  "T 9472 AB": { lat: -6.19118, lng: 106.92391, radiusM: 5000 },
+  "T 9521 AB": { lat: -6.19118, lng: 106.92391, radiusM: 5000 },
+  "T 9473 AB": { lat: -6.35066, lng: 107.28102, radiusM: 5000 },
+  "T 9508 AB": { lat: -6.35066, lng: 107.28102, radiusM: 5000 },
+};
+
+const PLATE_COOLDOWN_MIN: Record<string, number> = {};
 
 // ✅ fallback by address keywords (plate-based)
 const TARGET_ADDRESS_KEYWORDS_BY_PLATE: Record<string, string[]> = {
@@ -336,17 +391,90 @@ function addressObjectToString(addr: any) {
   return parts.join(", ");
 }
 
-function takeTopStops(stops: any[], n: number) {
+function pickStopsWithTime(stops: any[]) {
   if (!Array.isArray(stops) || !stops.length) return [];
-  const ranked = [...stops]
+  return stops
+    .map((s) => {
+      const latRaw =
+        s?.lat ??
+        s?.latitude ??
+        s?.latitute ??
+        s?.latLng?.lat ??
+        s?.location?.lat ??
+        s?.point?.lat ??
+        s?.coordinate?.lat ??
+        null;
+      const lngRaw =
+        s?.lng ??
+        s?.lon ??
+        s?.long ??
+        s?.longitude ??
+        s?.latLng?.lng ??
+        s?.latLng?.lon ??
+        s?.location?.lng ??
+        s?.location?.lon ??
+        s?.point?.lng ??
+        s?.point?.lon ??
+        s?.coordinate?.lng ??
+        s?.coordinate?.lon ??
+        null;
+      const lat =
+        typeof latRaw === "number"
+          ? latRaw
+          : typeof latRaw === "string"
+            ? Number(latRaw)
+            : null;
+      const lng =
+        typeof lngRaw === "number"
+          ? lngRaw
+          : typeof lngRaw === "string"
+            ? Number(lngRaw)
+            : null;
+      return {
+        lat,
+        lng,
+        startSec:
+          typeof s?.startSec === "number"
+            ? s.startSec
+            : typeof s?.startTime === "number"
+              ? s.startTime
+              : typeof s?.start_time === "number"
+                ? s.start_time
+                : null,
+      };
+    })
+    .filter(
+      (s) =>
+        typeof s.lat === "number" &&
+        Number.isFinite(s.lat) &&
+        typeof s.lng === "number" &&
+        Number.isFinite(s.lng),
+    );
+}
+
+function countTripsByGap(
+  stops: Array<{ lat: number; lng: number; startSec?: number | null }>,
+  minGapSec: number,
+) {
+  if (!stops.length) return 0;
+  const withTime = stops
     .map((s) => ({
-      lat: typeof s?.lat === "number" ? s.lat : null,
-      lng: typeof s?.lng === "number" ? s.lng : null,
-      durationSec: Number(s?.durationSec ?? 0) || 0,
+      ...s,
+      startSec: typeof s.startSec === "number" ? Math.floor(s.startSec) : null,
     }))
-    .filter((s) => typeof s.lat === "number" && typeof s.lng === "number")
-    .sort((a, b) => b.durationSec - a.durationSec);
-  return ranked.slice(0, n).map((s) => ({ lat: s.lat, lng: s.lng }));
+    .filter((s) => typeof s.startSec === "number");
+  if (!withTime.length) return 1;
+  withTime.sort((a, b) => (a.startSec as number) - (b.startSec as number));
+  let count = 1;
+  let last = withTime[0].startSec as number;
+  for (let i = 1; i < withTime.length; i++) {
+    const cur = withTime[i].startSec as number;
+    if (cur - last >= minGapSec) {
+      count += 1;
+      last = cur;
+    }
+  }
+  return count;
 }
 
 const ADDRESS_STOPWORDS = new Set([
@@ -471,6 +599,16 @@ function ymdFromIsoWib(iso?: string | null) {
   return `${y}-${m}-${dd}`;
 }
 
+function dayRangeEpochSecWib(ymd: string) {
+  const safe = String(ymd ?? "").trim();
+  if (!safe) return { startSec: 0, endSec: 0 };
+  const start = new Date(`${safe}T00:00:00+07:00`);
+  if (Number.isNaN(start.getTime())) return { startSec: 0, endSec: 0 };
+  const startSec = Math.floor(start.getTime() / 1000);
+  const endSec = startSec + 24 * 3600;
+  return { startSec, endSec };
+}
+
 // ================================
 // ✅ CUSTOMER MASTER (label by plate)
 // ================================
@@ -575,6 +713,12 @@ function parseTimeToMin(input?: string | null) {
   if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
   if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
   return hh * 60 + mm;
+}
+
+function formatTimeDot(input?: string | null) {
+  const s = normalizeTimeHHmm(input);
+  if (!s || s === "-") return "-";
+  return s.replace(":", ".");
 }
 
 function diffMin(etd?: string | null, eta?: string | null) {
@@ -849,6 +993,15 @@ function PlanLineActualBarChart({
   rows,
   badgeLabel,
   onSelect,
+  onBarInfo,
+  tooltipIndex,
+  tooltipText,
+  tooltipSource,
+  planEtaByPlate,
+  actualEtaByPlate,
+  actualTripsByPlate,
+  actualEtdTripsByPlate,
+  delayThresholdMin = 30,
 }: {
   badgeLabel: string;
   rows: {
@@ -856,9 +1009,31 @@ function PlanLineActualBarChart({
     planCount: number;
     completeCount: number;
     sn?: string;
+    tripIndex?: number;
+    tripTime?: string;
   }[];
   onSelect?: (sn: string, label: string) => void;
+  onBarInfo?: (
+    row: {
+      label: string;
+      planCount: number;
+      completeCount: number;
+      sn?: string;
+      tripIndex?: number;
+      tripTime?: string;
+    },
+    index: number,
+  ) => void;
+  tooltipIndex?: number | null;
+  tooltipText?: string | null;
+  tooltipSource?: "bar" | "line" | null;
+  planEtaByPlate?: Record<string, string>;
+  actualEtaByPlate?: Record<string, string>;
+  actualTripsByPlate?: Record<string, string[]>;
+  actualEtdTripsByPlate?: Record<string, string[]>;
+  delayThresholdMin?: number;
 }) {
+  const [hoverBarIndex, setHoverBarIndex] = useState<number | null>(null);
   // ✅ dibuat lebih tinggi + lebar supaya grafik memenuhi card
   const width = Math.max(900, rows.length * 220);
   const height = 320;
@@ -980,10 +1155,84 @@ function PlanLineActualBarChart({
                       const h = padTop + innerH - y;
                       const barH = value === 0 ? 8 : Math.max(0, h);
                       const barY = value === 0 ? padTop + innerH - barH : y;
-                      const clickable = Boolean(r.sn && onSelect);
+                      const clickable = Boolean(
+                        onBarInfo || (r.sn && onSelect),
+                      );
                       const barOpacity = value === 0 ? 0.6 : 0.85;
+                      const plate = extractPlateFromDestination(r.label);
+                      const planEta = planEtaByPlate?.[plate] ?? "";
+                      const actualEta = actualEtaByPlate?.[plate] ?? "";
+                      const tripTimes = actualTripsByPlate?.[plate] ?? [];
+                      const planMin = parseTimeToMin(planEta);
+                      const actualMin = parseTimeToMin(actualEta);
+                      const tripDeltas =
+                        planMin == null
+                          ? []
+                          : tripTimes
+                              .map((t) => {
+                                const m = parseTimeToMin(t);
+                                return m == null ? null : m - planMin;
+                              })
+                              .filter((v): v is number => v != null);
+                      const maxDelay =
+                        tripDeltas.length > 0 ? Math.max(...tripDeltas) : null;
+                      const deltaMinRaw =
+                        planMin != null && actualMin != null
+                          ? actualMin - planMin
+                          : null;
+                      const delayMinRaw =
+                        maxDelay != null
+                          ? Math.max(0, maxDelay)
+                          : deltaMinRaw != null
+                            ? Math.max(0, deltaMinRaw)
+                            : null;
+                      const isLate =
+                        delayMinRaw != null && delayMinRaw >= delayThresholdMin;
+                      const isOnTime =
+                        delayMinRaw != null && delayMinRaw < delayThresholdMin;
+                      const segColor = (idx: number, fallback: string) => {
+                        const t = tripTimes[idx];
+                        if (!t) return fallback;
+                        const m = parseTimeToMin(t);
+                        if (planMin == null || m == null) return fallback;
+                        return m - planMin >= delayThresholdMin
+                          ? "#DC2626"
+                          : "#16A34A";
+                      };
+                      const isHover = hoverBarIndex === i;
+                      const setHoverTrip = (idx: number) => {
+                        setHoverBarIndex(i);
+                        if (onBarInfo) {
+                          onBarInfo(
+                            {
+                              ...r,
+                              tripIndex: idx + 1,
+                              tripTime: tripTimes[idx],
+                            },
+                            i,
+                          );
+                        }
+                      };
                       return (
-                        <g key={i}>
+                        <g
+                          key={i}
+                          className={clickable ? "cursor-pointer" : undefined}
+                          transform={isHover ? "translate(0,-2)" : undefined}
+                          style={{
+                            transition: "transform 140ms ease",
+                          }}
+                          onMouseEnter={() => {
+                            setHoverBarIndex(i);
+                            if (onBarInfo) return onBarInfo(r, i);
+                          }}
+                          onMouseLeave={() => {
+                            setHoverBarIndex(null);
+                            if (onBarInfo) return onBarInfo(r, -1);
+                          }}
+                          onClick={() => {
+                            if (r.sn && onSelect) onSelect(r.sn, r.label);
+                          }}
+                        >
                           {value >= 3 ? (
                             <>
                               <rect
@@ -992,13 +1241,37 @@ function PlanLineActualBarChart({
                                 width={barW}
                                 height={barH / 3}
                                 rx={10}
-                                fill="#FACC15"
+                                fill={segColor(2, "#FACC15")}
                                 opacity={barOpacity}
-                                className={
-                                  clickable ? "cursor-pointer" : undefined
-                                }
-                                onClick={() => {
-                                  if (r.sn && onSelect) onSelect(r.sn, r.label);
+                                style={{
+                                  filter: isHover
+                                    ? "drop-shadow(0 8px 14px rgba(16,185,129,0.28))"
+                                    : undefined,
+                                  transition: "filter 140ms ease",
+                                }}
+                              />
+                              <rect
+                                x={x}
+                                y={barY}
+                                width={barW}
+                                height={barH / 3}
+                                rx={10}
+                                fill="transparent"
+                                onMouseEnter={() => setHoverTrip(2)}
+                              />
+                              <rect
+                                x={x}
+                                y={barY + barH / 3}
+                                width={barW}
+                                height={barH / 3}
+                                rx={10}
+                                fill={segColor(1, "#2563EB")}
+                                opacity={barOpacity}
+                                style={{
+                                  filter: isHover
+                                    ? "drop-shadow(0 8px 14px rgba(37,99,235,0.28))"
+                                    : undefined,
+                                  transition: "filter 140ms ease",
                                 }}
                               />
                               <rect
@@ -1007,13 +1280,22 @@ function PlanLineActualBarChart({
                                 width={barW}
                                 height={barH / 3}
                                 rx={10}
-                                fill="#2563EB"
+                                fill="transparent"
+                                onMouseEnter={() => setHoverTrip(1)}
+                              />
+                              <rect
+                                x={x}
+                                y={barY + (2 * barH) / 3}
+                                width={barW}
+                                height={barH / 3}
+                                rx={10}
+                                fill={segColor(0, "#16A34A")}
                                 opacity={barOpacity}
-                                className={
-                                  clickable ? "cursor-pointer" : undefined
-                                }
-                                onClick={() => {
-                                  if (r.sn && onSelect) onSelect(r.sn, r.label);
+                                style={{
+                                  filter: isHover
+                                    ? "drop-shadow(0 8px 14px rgba(22,163,74,0.28))"
+                                    : undefined,
+                                  transition: "filter 140ms ease",
                                 }}
                               />
                               <rect
@@ -1022,14 +1304,8 @@ function PlanLineActualBarChart({
                                 width={barW}
                                 height={barH / 3}
                                 rx={10}
-                                fill="#16A34A"
-                                opacity={barOpacity}
-                                className={
-                                  clickable ? "cursor-pointer" : undefined
-                                }
-                                onClick={() => {
-                                  if (r.sn && onSelect) onSelect(r.sn, r.label);
-                                }}
+                                fill="transparent"
+                                onMouseEnter={() => setHoverTrip(0)}
                               />
                             </>
                           ) : value >= 2 ? (
@@ -1040,13 +1316,37 @@ function PlanLineActualBarChart({
                                 width={barW}
                                 height={barH / 2}
                                 rx={10}
-                                fill="#2563EB"
+                                fill={segColor(1, "#2563EB")}
                                 opacity={barOpacity}
-                                className={
-                                  clickable ? "cursor-pointer" : undefined
-                                }
-                                onClick={() => {
-                                  if (r.sn && onSelect) onSelect(r.sn, r.label);
+                                style={{
+                                  filter: isHover
+                                    ? "drop-shadow(0 8px 14px rgba(37,99,235,0.28))"
+                                    : undefined,
+                                  transition: "filter 140ms ease",
+                                }}
+                              />
+                              <rect
+                                x={x}
+                                y={barY}
+                                width={barW}
+                                height={barH / 2}
+                                rx={10}
+                                fill="transparent"
+                                onMouseEnter={() => setHoverTrip(1)}
+                              />
+                              <rect
+                                x={x}
+                                y={barY + barH / 2}
+                                width={barW}
+                                height={barH / 2}
+                                rx={10}
+                                fill={segColor(0, "#16A34A")}
+                                opacity={barOpacity}
+                                style={{
+                                  filter: isHover
+                                    ? "drop-shadow(0 8px 14px rgba(22,163,74,0.28))"
+                                    : undefined,
+                                  transition: "filter 140ms ease",
                                 }}
                               />
                               <rect
@@ -1055,14 +1355,8 @@ function PlanLineActualBarChart({
                                 width={barW}
                                 height={barH / 2}
                                 rx={10}
-                                fill="#16A34A"
-                                opacity={barOpacity}
-                                className={
-                                  clickable ? "cursor-pointer" : undefined
-                                }
-                                onClick={() => {
-                                  if (r.sn && onSelect) onSelect(r.sn, r.label);
-                                }}
+                                fill="transparent"
+                                onMouseEnter={() => setHoverTrip(0)}
                               />
                             </>
                           ) : (
@@ -1072,36 +1366,131 @@ function PlanLineActualBarChart({
                               width={barW}
                               height={barH}
                               rx={10}
-                              fill="#16A34A"
+                              fill={segColor(0, "#16A34A")}
                               opacity={barOpacity}
-                              className={
-                                clickable ? "cursor-pointer" : undefined
-                              }
-                              onClick={() => {
-                                if (r.sn && onSelect) onSelect(r.sn, r.label);
+                              style={{
+                                filter: isHover
+                                  ? "drop-shadow(0 8px 14px rgba(22,163,74,0.28))"
+                                  : undefined,
+                                transition: "filter 140ms ease",
                               }}
                             />
                           )}
-                          <text
-                            x={toX(i)}
-                            y={barY - 6}
-                            textAnchor="middle"
-                            fontSize="11"
-                            fontWeight="800"
-                            fill={
-                              value >= 3
-                                ? "#854D0E"
-                                : value >= 2
-                                  ? "#1D4ED8"
-                                  : "#166534"
-                            }
-                          >
-                            {value}
-                          </text>
+                          {isLate || isOnTime ? (
+                            <rect
+                              x={x - 1}
+                              y={barY - 1}
+                              width={barW + 2}
+                              height={barH + 2}
+                              rx={11}
+                              fill="none"
+                              stroke={isLate ? "#DC2626" : "#16A34A"}
+                              strokeWidth={2}
+                              opacity={0.55}
+                            />
+                          ) : null}
                         </g>
                       );
                     })}
                   </g>
+
+                  {/* tooltip (earliest arrival time) */}
+                  {tooltipIndex != null &&
+                  tooltipIndex >= 0 &&
+                  tooltipIndex < rows.length &&
+                  tooltipText
+                    ? (() => {
+                        const r = rows[tooltipIndex];
+                        const isLine = tooltipSource === "line";
+                        const value = isLine
+                          ? Math.max(0, r.planCount ?? 0)
+                          : Math.max(0, r.completeCount ?? 0);
+                        const x = toX(tooltipIndex);
+                        const lift = value >= 2 ? 28 : 0;
+                        const y = toY(value) - (isLine ? 40 : 32) - lift;
+                        const lines = String(tooltipText)
+                          .split("•")
+                          .map((s) => s.trim())
+                          .filter(Boolean);
+                        const textLines = lines.length ? lines : [tooltipText];
+                        const maxLen = Math.max(
+                          6,
+                          ...textLines.map((t) => t.length),
+                        );
+                        const lineH = 16;
+                        const padY = 10;
+                        const padXText = 12;
+                        const iconX = padXText + 6;
+                        const textX = padXText + 18;
+                        const tooltipH = padY * 2 + textLines.length * lineH;
+                        const tooltipY = Math.max(padTop + 28, y);
+                        const tooltipW = Math.min(
+                          300,
+                          Math.max(180, maxLen * 7.0 + 28),
+                        );
+                        const tooltipX = clamp(
+                          x - tooltipW / 2,
+                          padX,
+                          padX + innerW - tooltipW,
+                        );
+                        return (
+                          <g>
+                            <rect
+                              x={tooltipX}
+                              y={tooltipY - tooltipH}
+                              width={tooltipW}
+                              height={tooltipH}
+                              rx={10}
+                              fill="#064E3B"
+                              opacity={0.96}
+                              style={{
+                                filter:
+                                  "drop-shadow(0 10px 18px rgba(6,78,59,0.28))",
+                              }}
+                            />
+                            <path
+                              d={`M ${tooltipX + tooltipW / 2 - 6} ${
+                                tooltipY - 2
+                              } L ${tooltipX + tooltipW / 2 + 6} ${
+                                tooltipY - 2
+                              } L ${tooltipX + tooltipW / 2} ${tooltipY + 6} Z`}
+                              fill="#064E3B"
+                              opacity={0.96}
+                            />
+                            {textLines.map((ln, idx) => {
+                              const yy =
+                                tooltipY -
+                                tooltipH +
+                                padY +
+                                lineH / 2 +
+                                idx * lineH;
+                              return (
+                                <g key={idx}>
+                                  <circle
+                                    cx={tooltipX + iconX}
+                                    cy={yy}
+                                    r={4}
+                                    fill={idx === 0 ? "#EF4444" : "#10B981"}
+                                    opacity={0.9}
+                                  />
+                                  <text
+                                    x={tooltipX + textX}
+                                    y={yy}
+                                    textAnchor="start"
+                                    dominantBaseline="middle"
+                                    fontSize="12"
+                                    fontWeight="700"
+                                    fill="#ECFDF5"
+                                  >
+                                    {ln}
+                                  </text>
+                                </g>
+                              );
+                            })}
+                          </g>
+                        );
+                      })()
+                    : null}
 
                   {/* plan line (target count) */}
                   <path
@@ -1112,16 +1501,26 @@ function PlanLineActualBarChart({
                     strokeLinecap="round"
                     strokeDasharray="8 8"
                   />
-                  {rows.map((r, i) => (
-                    <circle
-                      key={i}
-                      cx={toX(i)}
-                      cy={toY(r.planCount)}
-                      r={4.2}
-                      fill="#DC2626"
-                      opacity={0.95}
-                    />
-                  ))}
+                  {rows.map((r, i) => {
+                    return (
+                      <g key={i}>
+                        <circle
+                          cx={toX(i)}
+                          cy={toY(r.planCount)}
+                          r={4.2}
+                          fill="#DC2626"
+                          opacity={0.95}
+                        />
+                        {/* wider hover target for line */}
+                        <circle
+                          cx={toX(i)}
+                          cy={toY(r.planCount)}
+                          r={10}
+                          fill="transparent"
+                        />
+                      </g>
+                    );
+                  })}
 
                   {/* axis labels */}
                   <g fontSize="12" fill="#64748B" fontWeight="800">
@@ -1192,8 +1591,12 @@ function PlanLineActualBarChart({
                 Plan
               </span>
               <span className="inline-flex items-center gap-2">
-                <span className="inline-block h-2.5 w-7 rounded-full bg-emerald-600" />
-                Actual
+                <span className="inline-block h-2.5 w-2.5 rounded-full bg-emerald-500" />
+                On time
+              </span>
+              <span className="inline-flex items-center gap-2">
+                <span className="inline-block h-2.5 w-2.5 rounded-full bg-rose-500" />
+                Delay
               </span>
             </div>
 
@@ -1440,7 +1843,7 @@ export default function DashboardPage() {
       Record<
         string,
         {
-          points: Array<{ lat: number; lng: number }>;
+          points: Array<{ lat: number; lng: number; startSec?: number | null }>;
           fetchedAt: number;
         }
       >
@@ -1510,6 +1913,25 @@ export default function DashboardPage() {
   const [timelineItems, setTimelineItems] = useState<any[]>([]);
   const [timelineLoading, setTimelineLoading] = useState(false);
   const [actualBySn, setActualBySn] = useState<Record<string, number>>({});
+  const [arrivalByPlate, setArrivalByPlate] = useState<Record<string, string>>(
+    {},
+  );
+  const [arrivalTripsByPlate, setArrivalTripsByPlate] = useState<
+    Record<string, string[]>
+  >({});
+  const [departureTripsByPlate, setDepartureTripsByPlate] = useState<
+    Record<string, string[]>
+  >({});
+  const [historyDownloading, setHistoryDownloading] = useState(false);
+  const [selectedArrivalInfo, setSelectedArrivalInfo] = useState<string | null>(
+    null,
+  );
+  const [selectedArrivalIndex, setSelectedArrivalIndex] = useState<
+    number | null
+  >(null);
+  const [selectedArrivalSource, setSelectedArrivalSource] = useState<
+    "bar" | "line" | null
+  >(null);
   const [arrivalDebug, setArrivalDebug] = useState<
     Array<{
       sn: string;
@@ -1586,9 +2008,57 @@ export default function DashboardPage() {
     const cached = actualCacheRef.current?.[day] ?? null;
     const counts = cached?.counts ?? null;
     if (counts && Object.keys(counts).length) {
-      setActualBySn((prev) => ({ ...counts, ...prev }));
+      setActualBySn(counts);
+    } else {
+      setActualBySn({});
     }
+    setArrivalTripsByPlate({});
+    setDepartureTripsByPlate({});
+    setSelectedArrivalInfo(null);
+    setSelectedArrivalIndex(null);
   }, [deliveryDateFilter]);
+
+  const fetchActualFromDb = async (day: string, withStops = false) => {
+    try {
+      const res = await fetch(
+        `/api/actual/daily?date=${encodeURIComponent(day)}${
+          withStops ? "&includeStops=1" : ""
+        }`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) return null;
+      const json = await res.json();
+      const rows = Array.isArray(json?.rows) ? json.rows : [];
+      if (!rows.length) return null;
+      const counts: Record<string, number> = {};
+      const arrivals: Record<string, string> = {};
+      const arrivalsByPlate: Record<string, string[]> = {};
+      const departuresByPlate: Record<string, string[]> = {};
+      for (const r of rows) {
+        const plate = normalizePlate(r?.plate);
+        if (!plate || plate === "-") continue;
+        const v = Number(r?.tripCount ?? 0);
+        counts[plate] = Number.isFinite(v) ? v : 0;
+        if (withStops && Array.isArray(r?.stops)) {
+          const windows = buildTripWindowsFromStops(r.stops);
+          const tripTimes = windows
+            .map((w) => fmtTimeWibFromSec(w.startSec))
+            .filter((t: string) => t && t !== "-");
+          const tripEtdTimes = windows
+            .map((w) => fmtTimeWibFromSec(w.endSec))
+            .filter((t: string) => t && t !== "-");
+          if (tripTimes.length) {
+            arrivals[plate] = tripTimes[0];
+            arrivalsByPlate[plate] = tripTimes;
+            departuresByPlate[plate] = tripEtdTimes;
+          }
+        }
+      }
+      return { counts, arrivals, arrivalsByPlate, departuresByPlate };
+    } catch {
+      return null;
+    }
+  };
 
   // ✅ DASHBOARD harus ngikutin kendaraan yang ada di Realtime Map
   // Basisnya: plate/destination yang sedang aktif (activeDrivers)
@@ -1867,54 +2337,94 @@ export default function DashboardPage() {
 
   useEffect(() => {
     let cancelled = false;
+    let inFlight = false;
     const run = async () => {
-      const day = deliveryDateFilter ?? todayWIB();
-      const cached = actualCacheRef.current?.[day] ?? {
-        counts: {},
-        inside: {},
-        lastArrivalMs: {},
-      };
-      const nextCounts: Record<string, number> = { ...cached.counts };
-      const nextInside: Record<string, boolean> = { ...cached.inside };
-      const nextLastArrivalMs: Record<string, number> = {
-        ...cached.lastArrivalMs,
-      };
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const day = deliveryDateFilter ?? todayWIB();
+        const lastCounts = actualCacheRef.current?.[day]?.counts ?? {};
+        const isToday = day === todayWIB();
+        const nextCounts: Record<string, number> = { ...lastCounts };
 
-      if (!driversForActual.length) {
-        if (!cancelled) setActualBySn(nextCounts);
-        return;
-      }
-
-      const dayYmd = deliveryDateFilter ?? todayWIB();
-      const yesterday = yesterdayWIB();
-      const addrLookups = await Promise.all(
-        driversForActual.map(async (d) => {
-          const sn = String(d.driverId ?? d.id ?? "").trim();
-          if (!sn) return { sn, addrMatch: false, inside: false };
-
-          const customer = getCustomerLabelByPlate(d.plate);
-          const target = CUSTOMER_DEST_POINTS[customer] ?? null;
-          const insideByGeo = isArrivedByPosition(
-            { lat: d.lat, lng: d.lng },
-            target,
-          );
-          const distM =
-            target && d.lat != null && d.lng != null
-              ? haversineMeters(
-                  { lat: d.lat, lng: d.lng },
-                  { lat: target.lat, lng: target.lng },
-                )
-              : null;
-
-          // fallback: stop points from timeline (only for non-today)
-          let insideByStop = false;
-          let stopHitCount = 0;
-          if (!isToday) {
+        // ✅ Prefer DB snapshot for this date (source of truth)
+        try {
+          const snap = await fetchActualFromDb(day, true);
+          if (snap && Object.keys(snap.counts).length > 0) {
+            if (!cancelled) {
+              setActualBySn(snap.counts);
+              setArrivalByPlate(snap.arrivals ?? {});
+              setArrivalTripsByPlate(snap.arrivalsByPlate ?? {});
+              setDepartureTripsByPlate(snap.departuresByPlate ?? {});
+            }
+            actualCacheRef.current = {
+              ...actualCacheRef.current,
+              [day]: {
+                counts: snap.counts,
+                inside: {},
+                lastArrivalMs: {},
+              },
+            };
             try {
-              const stopDayCache = stopCacheRef.current[dayYmd] ?? {};
+              window.localStorage.setItem(
+                DASHBOARD_ACTUAL_CACHE_KEY,
+                JSON.stringify(actualCacheRef.current),
+              );
+            } catch {}
+            return;
+          }
+        } catch {}
+
+        // If DB has no rows yet, keep cached history (or empty) and stop here.
+        if (Object.keys(lastCounts).length > 0) {
+          if (!cancelled) setActualBySn(lastCounts);
+        } else {
+          if (!cancelled) setActualBySn({});
+        }
+        return;
+
+        // For past days, keep cached history and avoid overwriting with zeros.
+        if (!isToday && Object.keys(lastCounts).length > 0) {
+          if (!cancelled) setActualBySn(lastCounts);
+          return;
+        }
+
+        if (!driversForActual.length) return;
+
+        const dayYmd = deliveryDateFilter ?? todayWIB();
+        const addrLookups = await Promise.all(
+          driversForActual.map(async (d) => {
+            const sn = String(d.driverId ?? d.id ?? "").trim();
+            if (!sn) return { sn, addrMatch: false, inside: false };
+
+            const customer = getCustomerLabelByPlate(d.plate);
+            const plateKey = normalizePlate(d.plate);
+            const target =
+              (plateKey ? PLATE_TARGET_POINTS[plateKey] : null) ??
+              CUSTOMER_DEST_POINTS[customer] ??
+              null;
+            const distM =
+              target && d.lat != null && d.lng != null
+                ? haversineMeters(
+                    { lat: d.lat, lng: d.lng },
+                    { lat: target.lat, lng: target.lng },
+                  )
+                : null;
+
+            // use stop points from selected day as source of trips
+            let stopHitCount = 0;
+            let nearStopsLen = 0;
+            let stopPointsLen = 0;
+            let dayStopsLen = 0;
+            let firstStop: { lat: number; lng: number } | null = null;
+            let fetchFailed = false;
+            try {
+              const refDay = dayYmd;
+              const stopDayCache = stopCacheRef.current[refDay] ?? {};
               const cachedStop = stopDayCache[sn];
               const now = Date.now();
               let stopPoints = cachedStop?.points ?? [];
+              stopPointsLen = stopPoints.length;
               const stale =
                 !cachedStop || now - cachedStop.fetchedAt > STOP_CACHE_TTL_MS;
 
@@ -1922,145 +2432,140 @@ export default function DashboardPage() {
                 const res = await fetch(
                   `/api/gps/timeline?sn=${encodeURIComponent(
                     sn,
-                  )}&date=${encodeURIComponent(dayYmd)}&maxPoints=2500`,
+                  )}&date=${encodeURIComponent(refDay)}&maxPoints=2500`,
                   { cache: "no-store" },
                 );
                 if (res.ok) {
                   const json = await res.json();
                   const stops = Array.isArray(json?.stops) ? json.stops : [];
-                  stopPoints = takeTopStops(stops, 3);
+                  stopPoints = pickStopsWithTime(stops);
+                  stopPointsLen = stopPoints.length;
                   stopCacheRef.current = {
                     ...stopCacheRef.current,
-                    [dayYmd]: {
+                    [refDay]: {
                       ...stopDayCache,
                       [sn]: { points: stopPoints, fetchedAt: now },
                     },
                   };
+                } else {
+                  fetchFailed = true;
                 }
+              } else if (!cachedStop) {
+                fetchFailed = true;
               }
 
-              // fallback to yesterday if selected day has none
-              if (!stopPoints.length && dayYmd !== yesterday) {
-                const yCache = stopCacheRef.current[yesterday] ?? {};
-                const yCached = yCache[sn];
-                let yPoints = yCached?.points ?? [];
-                const yStale =
-                  !yCached || now - yCached.fetchedAt > STOP_CACHE_TTL_MS;
-                if (yStale) {
-                  const resY = await fetch(
-                    `/api/gps/timeline?sn=${encodeURIComponent(
-                      sn,
-                    )}&date=${encodeURIComponent(yesterday)}&maxPoints=2500`,
-                    { cache: "no-store" },
-                  );
-                  if (resY.ok) {
-                    const jsonY = await resY.json();
-                    const stopsY = Array.isArray(jsonY?.stops)
-                      ? jsonY.stops
-                      : [];
-                    yPoints = takeTopStops(stopsY, 3);
-                    stopCacheRef.current = {
-                      ...stopCacheRef.current,
-                      [yesterday]: {
-                        ...yCache,
-                        [sn]: { points: yPoints, fetchedAt: now },
-                      },
-                    };
-                  }
-                }
-                stopPoints = stopPoints.length ? stopPoints : yPoints;
-              }
-
+              // count stop points that are near target (Pulogadung / KIIC / plate override)
               if (target && stopPoints.length) {
-                stopHitCount = stopPoints.filter((p) => {
+                const { startSec, endSec } = dayRangeEpochSecWib(refDay);
+                const radius = target?.radiusM ?? ARRIVAL_RADIUS_M;
+                const dayStops = stopPoints.filter((p) => {
+                  const ts = typeof p.startSec === "number" ? p.startSec : null;
+                  // If timestamp missing, keep the stop (API is already date-scoped).
+                  if (ts == null) return true;
+                  return ts >= startSec && ts < endSec;
+                });
+                dayStopsLen = dayStops.length;
+                const nearStops = dayStops.filter((p) => {
                   const dist = haversineMeters(
                     { lat: p.lat, lng: p.lng },
                     { lat: target.lat, lng: target.lng },
                   );
-                  const radius = target?.radiusM ?? ARRIVAL_RADIUS_M;
                   return dist <= radius;
-                }).length;
-                insideByStop = stopHitCount > 0;
+                });
+                nearStopsLen = nearStops.length;
+                if (dayStops.length) {
+                  firstStop = { lat: dayStops[0].lat, lng: dayStops[0].lng };
+                }
+                const nearStopTimes = nearStops
+                  .map((p) =>
+                    typeof p.startSec === "number"
+                      ? fmtTimeWibFromSec(p.startSec)
+                      : null,
+                  )
+                  .filter(Boolean)
+                  .slice(0, 6);
+                const perPlateMin =
+                  PLATE_COOLDOWN_MIN[normalizePlate(d.plate)] ??
+                  ARRIVAL_COOLDOWN_MIN;
+                const minGapSec = perPlateMin * 60;
+                stopHitCount = countTripsByGap(nearStops, minGapSec);
               }
-            } catch {}
-          }
+            } catch {
+              fetchFailed = true;
+            }
 
-          return {
-            sn,
-            addrMatch: false,
-            inside: insideByGeo || insideByStop,
-            stopHitCount,
-            debug: {
+            return {
               sn,
-              plate: normalizePlate(d.plate) || "-",
-              customer,
-              lat: d.lat ?? null,
-              lng: d.lng ?? null,
-              distM,
-              insideByGeo: insideByGeo || insideByStop,
               addrMatch: false,
-              insideFinal: insideByGeo || insideByStop,
-            },
-          };
-        }),
-      );
-
-      const debugRows: typeof arrivalDebug = [];
-      for (const r of addrLookups) {
-        const sn = r.sn;
-        if (!sn) continue;
-        const inside = r.inside;
-        const wasInside = Boolean(nextInside[sn]);
-        const curCount = nextCounts[sn] ?? 0;
-
-        // ✅ jika sudah di dalam saat pertama load, isi minimal 1
-        if (inside && curCount === 0) {
-          nextCounts[sn] = 1;
-          nextLastArrivalMs[sn] = nextLastArrivalMs[sn] ?? Date.now();
-        }
-
-        if (inside && !wasInside) {
-          const nowMs = Date.now();
-          const lastMs = Number(nextLastArrivalMs[sn] ?? 0);
-          const cooldownMs = ARRIVAL_COOLDOWN_MIN * 60 * 1000;
-          if (!lastMs || nowMs - lastMs >= cooldownMs) {
-            nextCounts[sn] = (nextCounts[sn] ?? 0) + 1;
-            nextLastArrivalMs[sn] = nowMs;
-          }
-        }
-        if (
-          typeof (r as any).stopHitCount === "number" &&
-          (r as any).stopHitCount > 0
-        ) {
-          const next = Math.max(nextCounts[sn] ?? 0, (r as any).stopHitCount);
-          if (next > (nextCounts[sn] ?? 0)) nextCounts[sn] = next;
-        }
-        nextInside[sn] = inside;
-        if (r.debug) debugRows.push(r.debug);
-      }
-
-      if (cancelled) return;
-      setActualBySn(nextCounts);
-      setArrivalDebug(debugRows);
-      actualCacheRef.current = {
-        ...actualCacheRef.current,
-        [day]: {
-          counts: nextCounts,
-          inside: nextInside,
-          lastArrivalMs: nextLastArrivalMs,
-        },
-      };
-      try {
-        window.localStorage.setItem(
-          DASHBOARD_ACTUAL_CACHE_KEY,
-          JSON.stringify(actualCacheRef.current),
+              inside: stopHitCount > 0,
+              stopHitCount,
+              fetchFailed,
+              debug: {
+                sn,
+                plate: normalizePlate(d.plate) || "-",
+                customer,
+                lat: d.lat ?? null,
+                lng: d.lng ?? null,
+                distM,
+                insideByGeo: stopHitCount > 0,
+                addrMatch: false,
+                insideFinal: stopHitCount > 0,
+                stopHitCount,
+                fetchFailed,
+                nearStops: nearStopsLen,
+                stopPointsLen,
+                dayStopsLen,
+                targetLat: target?.lat ?? null,
+                targetLng: target?.lng ?? null,
+                targetRadius: target?.radiusM ?? ARRIVAL_RADIUS_M,
+                firstStop,
+                nearStopTimes,
+              },
+            };
+          }),
         );
-      } catch {}
+
+        const debugRows: typeof arrivalDebug = [];
+        for (const r of addrLookups) {
+          const sn = r.sn;
+          if (!sn) continue;
+          const stopCount =
+            typeof (r as any).stopHitCount === "number"
+              ? (r as any).stopHitCount
+              : 0;
+          const prevCount = Math.max(0, lastCounts[sn] ?? 0);
+          // Trip count should be monotonic within the same day.
+          nextCounts[sn] = Math.max(prevCount, Math.max(0, stopCount));
+          if (r.debug) debugRows.push(r.debug);
+        }
+
+        if (cancelled) return;
+        setActualBySn(nextCounts);
+        setArrivalDebug(debugRows);
+        actualCacheRef.current = {
+          ...actualCacheRef.current,
+          [day]: {
+            counts: nextCounts,
+            inside: {},
+            lastArrivalMs: {},
+          },
+        };
+        try {
+          window.localStorage.setItem(
+            DASHBOARD_ACTUAL_CACHE_KEY,
+            JSON.stringify(actualCacheRef.current),
+          );
+        } catch {}
+      } finally {
+        inFlight = false;
+      }
     };
 
     run();
+    const id = window.setInterval(run, 15000);
     return () => {
       cancelled = true;
+      window.clearInterval(id);
     };
   }, [driversForActual, deliveryDateFilter]);
 
@@ -2254,17 +2759,61 @@ export default function DashboardPage() {
         const planCount =
           tripByPlate.get(plate) ??
           (customer ? (tripByGroup.get(customer) ?? 0) : 0);
+        const trips = arrivalTripsByPlate[plate] ?? [];
+        const actualCount =
+          trips.length > 0
+            ? Math.min(3, trips.length)
+            : (actualBySn[sn] ?? actualBySn[plate] ?? 0);
         return {
           label,
           planCount,
-          completeCount: actualBySn[sn] ?? 0,
+          completeCount: actualCount,
           sn,
+          tripIndex: undefined,
+          tripTime: undefined,
         };
       })
       .sort((a, b) => a.label.localeCompare(b.label));
-
     return rows;
-  }, [driversForActual, actualBySn, effectivePlan]);
+  }, [driversForActual, actualBySn, effectivePlan, arrivalTripsByPlate]);
+
+  const planEtaByPlate = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const dest of Object.keys(effectivePlan)) {
+      const plate = extractPlateFromDestination(dest);
+      if (!plate || plate === "-") continue;
+      const eta = normalizeTimeHHmm(effectivePlan[dest]?.forward?.eta ?? "-");
+      const etaMin = parseTimeToMin(eta);
+      if (etaMin == null) continue;
+      const cur = map[plate];
+      if (!cur) {
+        map[plate] = eta;
+        continue;
+      }
+      const curMin = parseTimeToMin(cur);
+      if (curMin == null || etaMin < curMin) map[plate] = eta;
+    }
+    return map;
+  }, [effectivePlan]);
+
+  const planEtdByPlate = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const dest of Object.keys(effectivePlan)) {
+      const plate = extractPlateFromDestination(dest);
+      if (!plate || plate === "-") continue;
+      const etd = normalizeTimeHHmm(effectivePlan[dest]?.forward?.etd ?? "-");
+      const etdMin = parseTimeToMin(etd);
+      if (etdMin == null) continue;
+      const cur = map[plate];
+      if (!cur) {
+        map[plate] = etd;
+        continue;
+      }
+      const curMin = parseTimeToMin(cur);
+      if (curMin == null || etdMin < curMin) map[plate] = etd;
+    }
+    return map;
+  }, [effectivePlan]);
 
   const movingStoppedRows = useMemo(() => {
     const total = activeDriversFiltered.length;
@@ -2617,15 +3166,105 @@ export default function DashboardPage() {
                   </span>
                 </div>
               </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (historyDownloading) return;
+                  setHistoryDownloading(true);
+                  try {
+                    const res = await fetch("/api/history/report?format=xlsx", {
+                      cache: "no-store",
+                    });
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    const blob = await res.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `history-${todayWIB()}.xlsx`;
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    window.URL.revokeObjectURL(url);
+                  } catch (e) {
+                    console.error("download history error:", e);
+                  } finally {
+                    setHistoryDownloading(false);
+                  }
+                }}
+                className={`h-10 rounded-xl border px-4 text-xs font-extrabold transition ${
+                  historyDownloading
+                    ? "border-slate-200 bg-slate-100 text-slate-400"
+                    : "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                }`}
+              >
+                {historyDownloading ? "Downloading..." : "History"}
+              </button>
             </div>
 
             <div className="mt-4">
               <PlanLineActualBarChart
                 badgeLabel="Plan vs Actual (Delivery)"
                 rows={planActualDeliveryRows}
-                onSelect={(sn) => {
-                  router.push(`/live?sn=${encodeURIComponent(sn)}`);
+                onSelect={(sn, label) => {
+                  const plate = extractPlateFromDestination(label);
+                  const snClean = normalizePlate(sn);
+                  const plateClean = normalizePlate(plate);
+                  const useSn =
+                    sn && sn.trim() && snClean !== plateClean ? sn : "";
+                  const qs = useSn
+                    ? `sn=${encodeURIComponent(useSn)}&plate=${encodeURIComponent(plate)}`
+                    : `plate=${encodeURIComponent(plate)}`;
+                  router.push(`/live?${qs}`);
                 }}
+                onBarInfo={(row, index) => {
+                  if (index < 0) {
+                    setSelectedArrivalInfo(null);
+                    setSelectedArrivalIndex(null);
+                    setSelectedArrivalSource(null);
+                    return;
+                  }
+                  const plate = extractPlateFromDestination(row.label);
+                  const actualEta = arrivalByPlate[plate] ?? "";
+                  const planEta = planEtaByPlate[plate] ?? "";
+                  const planEtd = planEtdByPlate[plate] ?? "";
+                  const trips = arrivalTripsByPlate[plate] ?? [];
+                  const tripsEtd = departureTripsByPlate[plate] ?? [];
+                  const planDot = planEta ? formatTimeDot(planEta) : "-";
+                  const tripIdx =
+                    (row.tripIndex ? row.tripIndex - 1 : 0) >= 0
+                      ? row.tripIndex
+                        ? row.tripIndex - 1
+                        : 0
+                      : 0;
+                  const chosenTrip =
+                    row.tripTime || trips[tripIdx] || trips[0] || actualEta;
+                  const chosenEtd = tripsEtd[tripIdx] || tripsEtd[0] || "";
+                  const chosenDot = chosenTrip
+                    ? formatTimeDot(chosenTrip)
+                    : "-";
+                  const planLine = `Plan ETD: ${formatTimeDot(
+                    planEtd || "-",
+                  )} | ETA: ${planDot}`;
+                  const actualLine = `Actual ETD: ${formatTimeDot(
+                    chosenEtd || "-",
+                  )} | ETA: ${chosenDot}`;
+                  const label = chosenTrip
+                    ? `${planLine} • ${actualLine}`
+                    : planEta
+                      ? planLine
+                      : "belum tiba";
+                  setSelectedArrivalInfo(label);
+                  setSelectedArrivalIndex(index);
+                  setSelectedArrivalSource("bar");
+                }}
+                tooltipIndex={selectedArrivalIndex}
+                tooltipText={selectedArrivalInfo}
+                tooltipSource={selectedArrivalSource}
+                planEtaByPlate={planEtaByPlate}
+                actualEtaByPlate={arrivalByPlate}
+                actualTripsByPlate={arrivalTripsByPlate}
+                actualEtdTripsByPlate={departureTripsByPlate}
+                delayThresholdMin={30}
               />
             </div>
 
@@ -2645,8 +3284,21 @@ export default function DashboardPage() {
                         {r.plate} • {r.customer} • {r.lat?.toFixed(4)},{" "}
                         {r.lng?.toFixed(4)} • dist{" "}
                         {r.distM ? Math.round(r.distM) : "-"}m • geo{" "}
-                        {String(r.insideByGeo)} • addr {String(r.addrMatch)} •
-                        final {String(r.insideFinal)}
+                        {String(r.insideByGeo)} • stop{" "}
+                        {String(r.stopHitCount ?? 0)} • near{" "}
+                        {String((r as any).nearStops ?? 0)}/
+                        {String((r as any).dayStopsLen ?? 0)} • tgt{" "}
+                        {String((r as any).targetLat ?? "-")},{" "}
+                        {String((r as any).targetLng ?? "-")} r{" "}
+                        {String((r as any).targetRadius ?? "-")} • first{" "}
+                        {String((r as any).firstStop?.lat ?? "-")},{" "}
+                        {String((r as any).firstStop?.lng ?? "-")} • final{" "}
+                        {String(r.insideFinal)} • times{" "}
+                        {String(
+                          Array.isArray((r as any).nearStopTimes)
+                            ? (r as any).nearStopTimes.join(", ")
+                            : "-",
+                        )}
                       </div>
                     ))}
                   </div>

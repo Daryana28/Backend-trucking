@@ -108,3 +108,87 @@ model PlanDaily {
   @@index([deliveryDate])
   @@index([destination])
 }
+
+model ActualTripDaily {
+  id           String   @id @default(cuid())
+  deliveryDate String   // format: YYYY-MM-DD
+  plate        String
+  tripCount    Int      @default(0)
+  nearStops    Int      @default(0)
+  targetLat    Float?
+  targetLng    Float?
+  radiusM      Int?
+  cooldownMin  Int?
+  lastSyncAt   DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  stops        ActualTripStop[]
+  raw          ActualTripRaw?
+  events       ActualTripEvent[]
+
+  @@unique([deliveryDate, plate], name: "uniq_actual_trip_daily")
+  @@index([deliveryDate])
+  @@index([plate])
+}
+
+model ActualTripStop {
+  id           String   @id @default(cuid())
+  dailyId      String
+  plate        String
+  deliveryDate String
+  stopNo       Int?
+  lat          Float?
+  lng          Float?
+  startSec     Int?
+  endSec       Int?
+  durationSec  Int?
+  address      String?
+  isNear       Boolean  @default(false)
+  distM        Float?
+  createdAt    DateTime @default(now())
+
+  daily        ActualTripDaily @relation(fields: [dailyId], references: [id], onDelete: Cascade)
+
+  @@index([deliveryDate])
+  @@index([plate])
+}
+
+model ActualTripEvent {
+  id             String   @id @default(cuid())
+  dailyId        String
+  plate          String
+  deliveryDate   String
+  type           String   // DRIVE / STOP
+  stopNo         Int?
+  lat            Float?
+  lng            Float?
+  startSec       Int?
+  endSec         Int?
+  durationSec    Int?
+  distanceMeters Int?
+  address        String?
+  createdAt      DateTime @default(now())
+
+  daily          ActualTripDaily @relation(fields: [dailyId], references: [id], onDelete: Cascade)
+
+  @@index([deliveryDate])
+  @@index([plate])
+}
+
+model ActualTripRaw {
+  id           String   @id @default(cuid())
+  dailyId      String   @unique
+  plate        String
+  deliveryDate String
+  source       String   @default("accugps")
+  payload      Json
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  daily        ActualTripDaily @relation(fields: [dailyId], references: [id], onDelete: Cascade)
+
+  @@unique([deliveryDate, plate], name: "uniq_actual_trip_raw")
+  @@index([deliveryDate])
+  @@index([plate])
+}

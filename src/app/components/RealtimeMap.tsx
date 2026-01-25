@@ -340,8 +340,11 @@ const CUSTOMER_BY_PLATE: Record<string, string> = {
 function cleanPlate(raw?: string | null) {
   const s = String(raw ?? "").trim();
   if (!s) return "";
-  const idx = s.indexOf(" - ");
-  return idx >= 0 ? s.slice(0, idx).trim() : s;
+  const beforeDash = s.includes(" - ") ? s.split(" - ")[0]!.trim() : s;
+  const beforeParen = beforeDash.includes("(")
+    ? beforeDash.split("(")[0]!.trim()
+    : beforeDash;
+  return beforeParen;
 }
 
 function getCustomerLabel(plate?: string | null) {
@@ -567,6 +570,12 @@ export default function RealtimeMap({
   const lastTelemetryRef = useRef<
     Record<string, { p?: LatLng; tMs?: number; speedKmh?: number }>
   >({});
+  const pendingFocusRef = useRef<{
+    lat: number;
+    lng: number;
+    sn?: string;
+    key: string;
+  } | null>(null);
   const inFlightHistoryRef = useRef<Record<string, boolean>>({});
   const lastMatchHashRef = useRef<Record<string, string>>({});
   const lastFocusedSnRef = useRef<string | null>(null);
@@ -582,6 +591,7 @@ export default function RealtimeMap({
 
   const drivers = Array.isArray(driversProp) ? driversProp : driversInternal;
   const focusSnParam = String(searchParams.get("sn") ?? "").trim();
+  const focusPlateParam = String(searchParams.get("plate") ?? "").trim();
   const effectiveDestFilter =
     typeof destFilterProp === "string" ? destFilterProp : destFilterInternal;
 
@@ -605,22 +615,100 @@ export default function RealtimeMap({
   }, [drivers, effectiveDestFilter]);
 
   useEffect(() => {
-    if (!focusSnParam) return;
-    if (!drivers.length) return;
-    if (lastFocusedSnRef.current === focusSnParam) return;
-    const target = drivers.find(
-      (d) => String(d.driverId ?? d.id ?? "").trim() === focusSnParam,
-    );
-    if (!target || target.lat == null || target.lng == null) return;
-    lastFocusedSnRef.current = focusSnParam;
-    setSelectedSn(focusSnParam);
+    if (!focusSnParam && !focusPlateParam) return;
+    const focusKey = focusSnParam || focusPlateParam;
+    if (lastFocusedSnRef.current === focusKey) return;
+    const focusPlate = focusPlateParam || focusSnParam;
+    const focusClean = cleanPlate(focusPlate).toUpperCase();
+    const target = drivers.find((d) => {
+      const sn = String(d.driverId ?? d.id ?? "").trim();
+      const plate = cleanPlate(d.plate).toUpperCase();
+      return (
+        (focusSnParam && sn === focusSnParam) ||
+        (focusPlate && plate === focusClean)
+      );
+    });
     const map = leafletMapRef.current;
-    if (map) {
+    if (pendingFocusRef.current && map) {
+      const p = pendingFocusRef.current;
+      pendingFocusRef.current = null;
+      lastFocusedSnRef.current = p.key;
+      if (p.sn) setSelectedSn(p.sn);
       try {
-        map.flyTo({ lat: target.lat, lng: target.lng }, 14, { duration: 0.6 });
+        map.flyTo({ lat: p.lat, lng: p.lng }, 16, { duration: 0.6 });
       } catch {}
+      return;
     }
-  }, [focusSnParam, drivers]);
+    const tryZoom = (t: any | null) => {
+      if (!t || t.lat == null || t.lng == null) return false;
+      const sn = String(t.driverId ?? t.id ?? "").trim();
+      if (sn) setSelectedSn(sn);
+      const mapNow = leafletMapRef.current;
+      if (!mapNow) {
+        pendingFocusRef.current = {
+          lat: t.lat,
+          lng: t.lng,
+          sn: sn || undefined,
+          key: focusKey,
+        };
+        return true;
+      }
+      lastFocusedSnRef.current = focusKey;
+      try {
+        mapNow.flyTo({ lat: t.lat, lng: t.lng }, 16, { duration: 0.6 });
+      } catch {}
+      return true;
+    };
+    if (tryZoom(target)) return;
+    try {
+      const raw1 = window.sessionStorage.getItem("dashboard-latest-cache-v1");
+      const raw2 = window.sessionStorage.getItem("realtime-map-cache-v1");
+      const merged = [raw1, raw2]
+        .map((r) => {
+          try {
+            return r ? JSON.parse(r) : null;
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean);
+      for (const parsed of merged) {
+        const list = Array.isArray(parsed?.drivers) ? parsed.drivers : [];
+        const t = list.find((d: any) => {
+          const sn = String(d?.driverId ?? d?.id ?? "").trim();
+          const plate = cleanPlate(d?.plate).toUpperCase();
+          return (
+            (focusSnParam && sn === focusSnParam) ||
+            (focusPlate && plate === focusClean)
+          );
+        });
+        if (tryZoom(t)) return;
+      }
+    } catch {}
+  }, [focusSnParam, focusPlateParam, drivers]);
+
+  useEffect(() => {
+    if (!focusSnParam && !focusPlateParam) return;
+    const map = leafletMapRef.current;
+    if (!map) return;
+    const focusPlate = focusPlateParam || focusSnParam;
+    const focusClean = cleanPlate(focusPlate).toUpperCase();
+    const target = drivers.find((d) => {
+      const sn = String(d.driverId ?? d.id ?? "").trim();
+      const plate = cleanPlate(d.plate).toUpperCase();
+      return (
+        (focusSnParam && sn === focusSnParam) ||
+        (focusPlate && plate === focusClean)
+      );
+    });
+    if (!target || target.lat == null || target.lng == null) return;
+    const t = window.setTimeout(() => {
+      try {
+        map.flyTo({ lat: target.lat, lng: target.lng }, 16, { duration: 0.6 });
+      } catch {}
+    }, 600);
+    return () => window.clearTimeout(t);
+  }, [focusSnParam, focusPlateParam, drivers]);
 
   const trackerOptions = useMemo(() => {
     // gunakan semua driver yang terlihat agar mudah dipilih
@@ -1174,6 +1262,9 @@ export default function RealtimeMap({
         setTripReplayLoading(false);
         return;
       }
+      if (cached?.data) {
+        setTripReplayData(cached.data);
+      }
       setTripReplayLoading(true);
       setTripReplayErr(null);
       try {
@@ -1182,6 +1273,45 @@ export default function RealtimeMap({
         }
         const controller = new AbortController();
         tripReplayAbortRef.current = controller;
+
+        // ✅ Try DB timeline first (actual sync)
+        const dbRes = await fetch(
+          `/api/actual/timeline?date=${encodeURIComponent(
+            tripReplayDate,
+          )}&plate=${encodeURIComponent(tripReplaySn)}`,
+          { cache: "no-store", signal: controller.signal },
+        );
+        if (dbRes.ok) {
+          const dbJson = await dbRes.json();
+          const dbTl: any[] = Array.isArray(dbJson?.timeline)
+            ? dbJson.timeline
+            : [];
+          if (dbTl.length > 0) {
+            const stopsOnly = dbTl.filter((x) => x?.type === "STOP");
+            const json = {
+              ok: true,
+              date: tripReplayDate,
+              sn: tripReplaySn,
+              alias: null,
+              count: 0,
+              points: [],
+              stopsCount: stopsOnly.length,
+              stops: stopsOnly,
+              timelineCount: dbTl.length,
+              timeline: dbTl,
+              totals: null,
+            } as any;
+            if (cancelled) return;
+            setTripReplayData(json);
+            tripReplayCacheRef.current[cacheKey] = {
+              data: json,
+              fetchedAt: Date.now(),
+            };
+            setTripReplayLoading(false);
+            return;
+          }
+        }
+
         const res = await fetch(
           `/api/gps/timeline?sn=${encodeURIComponent(tripReplaySn)}&date=${encodeURIComponent(tripReplayDate)}&maxPoints=${HISTORY_MAX_DRAW_POINTS}`,
           { cache: "no-store", signal: controller.signal },
@@ -1368,6 +1498,15 @@ export default function RealtimeMap({
         className="w-full h-full rounded-2xl shadow-md border border-[#E5EBF3] overflow-hidden bg-white"
         whenCreated={(map: any) => {
           leafletMapRef.current = map;
+          if (pendingFocusRef.current) {
+            const p = pendingFocusRef.current;
+            pendingFocusRef.current = null;
+            lastFocusedSnRef.current = p.key;
+            if (p.sn) setSelectedSn(p.sn);
+            try {
+              map.flyTo({ lat: p.lat, lng: p.lng }, 16, { duration: 0.6 });
+            } catch {}
+          }
           setTimeout(() => invalidate(), 0);
         }}
         zoomControl={false}
@@ -1917,8 +2056,23 @@ export default function RealtimeMap({
 
             <div className="mt-4">
               {tripReplayLoading && (
-                <div className="text-sm font-semibold text-slate-600">
-                  Loading...
+                <div className="space-y-3">
+                  <div className="h-4 w-40 rounded-full bg-slate-200/70 animate-pulse" />
+                  <div className="h-24 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <div className="h-3 w-32 rounded-full bg-slate-200/70 animate-pulse" />
+                    <div className="mt-3 space-y-2">
+                      <div className="h-3 w-full rounded-full bg-slate-200/60 animate-pulse" />
+                      <div className="h-3 w-5/6 rounded-full bg-slate-200/60 animate-pulse" />
+                      <div className="h-3 w-4/6 rounded-full bg-slate-200/60 animate-pulse" />
+                    </div>
+                  </div>
+                  <div className="h-24 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <div className="h-3 w-28 rounded-full bg-slate-200/70 animate-pulse" />
+                    <div className="mt-3 space-y-2">
+                      <div className="h-3 w-full rounded-full bg-slate-200/60 animate-pulse" />
+                      <div className="h-3 w-3/4 rounded-full bg-slate-200/60 animate-pulse" />
+                    </div>
+                  </div>
                 </div>
               )}
               {tripReplayErr && (
@@ -1929,63 +2083,19 @@ export default function RealtimeMap({
 
               {!tripReplayLoading && !tripReplayErr && (
                 <div className="space-y-4">
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setTripReplayTypeFilter("DRIVE")}
-                        className={[
-                          "rounded-full border px-3 py-1 text-xs font-semibold",
-                          tripReplayTypeFilter === "DRIVE"
-                            ? "border-orange-200 bg-orange-50 text-orange-700"
-                            : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
-                        ].join(" ")}
-                      >
-                        Traveled
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setTripReplayTypeFilter("STOP")}
-                        className={[
-                          "rounded-full border px-3 py-1 text-xs font-semibold",
-                          tripReplayTypeFilter === "STOP"
-                            ? "border-orange-200 bg-orange-50 text-orange-700"
-                            : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
-                        ].join(" ")}
-                      >
-                        Stop
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setTripReplayTypeFilter("ALL")}
-                        className={[
-                          "rounded-full border px-3 py-1 text-xs font-semibold",
-                          tripReplayTypeFilter === "ALL"
-                            ? "border-orange-200 bg-orange-50 text-orange-700"
-                            : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
-                        ].join(" ")}
-                      >
-                        All
-                      </button>
+                  {!tripReplayData ? (
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-700">
+                      Belum ada delivery untuk periode ini. Klik <span className="font-extrabold">Show</span> untuk memuat data.
                     </div>
-                    <div className="flex-1 min-w-[180px]">
-                      <input
-                        type="text"
-                        value={tripReplayQuery}
-                        onChange={(e) => setTripReplayQuery(e.target.value)}
-                        placeholder="Search..."
-                        className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-900 placeholder:text-slate-400"
-                      />
+                  ) : null}
+                  {tripReplayData &&
+                  !Array.isArray(tripReplayData?.timeline) &&
+                  !Array.isArray(tripReplayData?.stops) &&
+                  !Array.isArray((tripReplayData as any)?.points) ? (
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-700">
+                      Tidak ada delivery untuk truck ini pada tanggal ini.
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setTripReplayQuery("")}
-                      className="h-10 rounded-xl border border-slate-200 bg-white px-4 text-xs font-extrabold text-slate-700 hover:bg-slate-50"
-                      title="Reset pencarian"
-                    >
-                      Reset
-                    </button>
-                  </div>
+                  ) : null}
                   {(() => {
                     const tl0: any[] = Array.isArray(tripReplayData?.timeline)
                       ? tripReplayData.timeline
@@ -2318,7 +2428,7 @@ export default function RealtimeMap({
                     if (!timelineItems.length) {
                       return (
                         <div className="text-sm font-semibold text-slate-600">
-                          Tidak ada data trip pada tanggal ini.
+                          Tidak ada delivery pada tanggal ini.
                         </div>
                       );
                     }
@@ -2362,7 +2472,7 @@ export default function RealtimeMap({
                     if (!movementDetected) {
                       return (
                         <div className="text-sm font-semibold text-slate-600">
-                          Belum ada data perjalanan pada tanggal ini.
+                          Belum ada delivery pada tanggal ini.
                         </div>
                       );
                     }
@@ -2495,6 +2605,16 @@ export default function RealtimeMap({
                                               {addr || "-"}
                                             </span>
                                           </div>
+                                          {typeof it?.lat === "number" &&
+                                          typeof it?.lng === "number" ? (
+                                            <div className="mt-1 text-xs font-semibold text-slate-600">
+                                              Coord:{" "}
+                                              <span className="text-slate-900">
+                                                {it.lat.toFixed(5)},{" "}
+                                                {it.lng.toFixed(5)}
+                                              </span>
+                                            </div>
+                                          ) : null}
                                           {/* ends-at removed */}
                                         </>
                                       )}
