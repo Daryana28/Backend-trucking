@@ -2025,19 +2025,28 @@ export default function DashboardPage() {
   const [selectedArrivalSource, setSelectedArrivalSource] = useState<
     "bar" | "line" | null
   >(null);
-  const [arrivalDebug, setArrivalDebug] = useState<
-    Array<{
-      sn: string;
-      plate: string;
-      customer: string;
-      lat: number | null;
-      lng: number | null;
-      distM: number | null;
-      insideByGeo: boolean;
-      addrMatch: boolean;
-      insideFinal: boolean;
-    }>
-  >([]);
+  type ArrivalDebugRow = {
+    sn: string;
+    plate: string;
+    customer: string;
+    lat: number | null;
+    lng: number | null;
+    distM: number | null;
+    insideByGeo: boolean;
+    addrMatch: boolean;
+    insideFinal: boolean;
+    stopHitCount?: number;
+    fetchFailed?: boolean;
+    nearStops?: number;
+    stopPointsLen?: number;
+    dayStopsLen?: number;
+    targetLat?: number | null;
+    targetLng?: number | null;
+    targetRadius?: number | null;
+    firstStop?: { lat: number; lng: number } | null;
+    nearStopTimes?: string[];
+  };
+  const [arrivalDebug, setArrivalDebug] = useState<ArrivalDebugRow[]>([]);
 
   useEffect(() => {
     try {
@@ -2508,11 +2517,12 @@ export default function DashboardPage() {
                 : null;
 
             // use stop points from selected day as source of trips
-            let stopHitCount = 0;
-            let nearStopsLen = 0;
-            let stopPointsLen = 0;
-            let dayStopsLen = 0;
-            let firstStop: { lat: number; lng: number } | null = null;
+              let stopHitCount = 0;
+              let nearStopsLen = 0;
+              let stopPointsLen = 0;
+              let dayStopsLen = 0;
+              let firstStop: { lat: number; lng: number } | null = null;
+              let nearStopTimes: string[] = [];
             let fetchFailed = false;
             try {
               const refDay = dayYmd;
@@ -2572,13 +2582,13 @@ export default function DashboardPage() {
                 if (dayStops.length) {
                   firstStop = { lat: dayStops[0].lat, lng: dayStops[0].lng };
                 }
-                const nearStopTimes = nearStops
+                nearStopTimes = nearStops
                   .map((p) =>
                     typeof p.startSec === "number"
                       ? fmtTimeWibFromSec(p.startSec)
                       : null,
                   )
-                  .filter(Boolean)
+                  .filter((v): v is string => typeof v === "string" && v !== "-")
                   .slice(0, 6);
                 const perPlateMin =
                   PLATE_COOLDOWN_MIN[normalizePlate(d.plate)] ??
@@ -2621,7 +2631,7 @@ export default function DashboardPage() {
           }),
         );
 
-        const debugRows: typeof arrivalDebug = [];
+        const debugRows: ArrivalDebugRow[] = [];
         for (const r of addrLookups) {
           const sn = r.sn;
           if (!sn) continue;
@@ -2632,7 +2642,7 @@ export default function DashboardPage() {
           const prevCount = Math.max(0, lastCounts[sn] ?? 0);
           // Trip count should be monotonic within the same day.
           nextCounts[sn] = Math.max(prevCount, Math.max(0, stopCount));
-          if (r.debug) debugRows.push(r.debug);
+          if (r.debug) debugRows.push(r.debug as ArrivalDebugRow);
         }
 
         if (cancelled) return;

@@ -208,7 +208,7 @@ function pickStopsFromTrack(track: any) {
 }
 
 export async function listTrackersByPlate() {
-  const list = await accugpsListTrackers();
+  const list: any = await accugpsListTrackers();
   const rows = Array.isArray(list?.data)
     ? list.data
     : Array.isArray(list?.data?.data)
@@ -235,7 +235,7 @@ export async function fetchStopsForSn(sn: string, dateYmd: string) {
   const stops = Array.isArray(res?.stops) ? res.stops : [];
   if (stops.length) return normalizeStops(stops);
   const tl = Array.isArray(res?.timeline) ? res.timeline : [];
-  const tlStops = tl.filter((x) => x?.type === "STOP");
+  const tlStops = tl.filter((x: any) => x?.type === "STOP");
   return normalizeStops(tlStops);
 }
 

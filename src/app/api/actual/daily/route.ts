@@ -18,11 +18,16 @@ export async function GET(req: Request) {
     const includeStops =
       new URL(req.url).searchParams.get("includeStops") === "1";
 
-    const rows = await prisma.actualTripDaily.findMany({
-      where: { deliveryDate: dateYmd },
-      orderBy: [{ plate: "asc" }],
-      include: includeStops ? { stops: true } : undefined,
-    });
+    const rows = includeStops
+      ? await prisma.actualTripDaily.findMany({
+          where: { deliveryDate: dateYmd },
+          orderBy: [{ plate: "asc" }],
+          include: { stops: true },
+        })
+      : await prisma.actualTripDaily.findMany({
+          where: { deliveryDate: dateYmd },
+          orderBy: [{ plate: "asc" }],
+        });
 
     return NextResponse.json({
       ok: true,
@@ -36,7 +41,7 @@ export async function GET(req: Request) {
         radiusM: r.radiusM,
         cooldownMin: r.cooldownMin,
         lastSyncAt: r.lastSyncAt,
-        stops: includeStops ? r.stops : undefined,
+        stops: includeStops ? (r as any).stops : undefined,
       })),
     });
   } catch (e: any) {

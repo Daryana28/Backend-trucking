@@ -144,7 +144,7 @@ export async function syncActualTrips(dateYmd?: string) {
       );
 
       await prisma.actualTripStop.createMany({
-        data: stopsForCompute.map((s, idx) => {
+        data: stopsForCompute.map((s: any, idx: number) => {
           const key =
             typeof s.lat === "number" && typeof s.lng === "number"
               ? `${s.lat.toFixed(5)},${s.lng.toFixed(5)},${s.startSec ?? ""}`
