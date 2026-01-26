@@ -487,7 +487,9 @@ function addressObjectToString(addr: any) {
   return parts.join(", ");
 }
 
-function pickStopsWithTime(stops: any[]) {
+function pickStopsWithTime(
+  stops: any[],
+): Array<{ lat: number; lng: number; startSec: number | null }> {
   if (!Array.isArray(stops) || !stops.length) return [];
   return stops
     .map((s) => {
@@ -514,21 +516,22 @@ function pickStopsWithTime(stops: any[]) {
         s?.coordinate?.lng ??
         s?.coordinate?.lon ??
         null;
-      const lat =
+      const latNum =
         typeof latRaw === "number"
           ? latRaw
           : typeof latRaw === "string"
             ? Number(latRaw)
             : null;
-      const lng =
+      const lngNum =
         typeof lngRaw === "number"
           ? lngRaw
           : typeof lngRaw === "string"
             ? Number(lngRaw)
             : null;
+      if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) return null;
       return {
-        lat,
-        lng,
+        lat: latNum,
+        lng: lngNum,
         startSec:
           typeof s?.startSec === "number"
             ? s.startSec
@@ -539,13 +542,7 @@ function pickStopsWithTime(stops: any[]) {
                 : null,
       };
     })
-    .filter(
-      (s) =>
-        typeof s.lat === "number" &&
-        Number.isFinite(s.lat) &&
-        typeof s.lng === "number" &&
-        Number.isFinite(s.lng),
-    );
+    .filter(Boolean) as Array<{ lat: number; lng: number; startSec: number | null }>;
 }
 
 function countTripsByGap(
