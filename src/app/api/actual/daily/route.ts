@@ -32,7 +32,7 @@ export async function GET(req: Request) {
     return NextResponse.json({
       ok: true,
       date: dateYmd,
-      rows: rows.map((r) => ({
+      rows: rows.map((r: any) => ({
         plate: r.plate,
         tripCount: r.tripCount,
         nearStops: r.nearStops,
