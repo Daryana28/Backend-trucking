@@ -117,13 +117,13 @@ export async function syncActualTrips(dateYmd?: string) {
         },
       },
       update: {
-        payload: rawTrack as any,
+        payload: JSON.stringify(rawTrack ?? null),
       },
       create: {
         dailyId: daily.id,
         deliveryDate: day,
         plate,
-        payload: rawTrack as any,
+        payload: JSON.stringify(rawTrack ?? null),
       },
     });
 

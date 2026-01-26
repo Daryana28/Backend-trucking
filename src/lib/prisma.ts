@@ -1,5 +1,6 @@
 // src/lib/prisma.ts
 import { PrismaClient } from "@prisma/client";
+import { startActualSyncCron } from "@/lib/actualSyncCron";
 
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
@@ -11,6 +12,14 @@ export const prisma =
 
 if (process.env.NODE_ENV !== "production") {
   globalForPrisma.prisma = prisma;
+}
+
+try {
+  if (process.env.ACTUAL_SYNC_AUTO_START !== "0") {
+    startActualSyncCron();
+  }
+} catch (e) {
+  console.warn("actual sync cron start skipped:", e);
 }
 
 export default prisma;

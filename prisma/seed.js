@@ -6,49 +6,30 @@ const prisma = new PrismaClient();
 
 async function main() {
   const plainPassword = "123456";
+  const hashedPassword = await bcrypt.hash(plainPassword, 10);
 
   // =========================
   // ADMIN (WEB)
   // =========================
-  // Route admin cek: admin.password === password
-  // Jadi di DB harus disimpan PLAIN
+  // Route admin pakai bcrypt.compare(password, admin.password)
+  // Jadi di DB harus disimpan HASH
   await prisma.admin.upsert({
     where: { username: "logistic" }, // username unik
     update: {
-      password: plainPassword,
+      password: hashedPassword,
     },
     create: {
       username: "logistic",
-      password: plainPassword,
+      password: hashedPassword,
     },
   });
 
-  // =========================
-  // DRIVER (MOBILE)
-  // =========================
-  // Route driver pakai bcrypt.compare(password, driver.password)
-  // Jadi di DB harus HASH
-  const driverHash = await bcrypt.hash(plainPassword, 10);
-
-  await prisma.driver.upsert({
-    where: { phone: "08123456789" }, // phone itu @unique di schema
-    update: {
-      name: "Daryana",
-      password: driverHash,
-    },
-    create: {
-      name: "Daryana",
-      phone: "08123456789",
-      password: driverHash,
-    },
-  });
-
-  console.log("✅ Seed admin & driver berhasil!");
+  console.log("Seed admin berhasil!");
 }
 
 main()
   .catch((e) => {
-    console.error("❌ Seed error:", e);
+    console.error("Seed error:", e);
     process.exit(1);
   })
   .finally(async () => {

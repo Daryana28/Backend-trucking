@@ -55,6 +55,22 @@ type HistoryRow = {
   lastUpdated: string;
 };
 
+const ACTUAL_ETD_TARGETS = (() => {
+  const raw = String(process.env.NEXT_PUBLIC_ACTUAL_ETD_TARGETS ?? "").trim();
+  if (!raw) return [] as Array<{ lat: number; lng: number; radiusM: number }>;
+  const radiusM = Number(process.env.NEXT_PUBLIC_ACTUAL_ETD_TARGET_RADIUS_M ?? "5000");
+  const radius = Number.isFinite(radiusM) ? radiusM : 5000;
+  return raw
+    .split(";")
+    .map((pair) => pair.split(",").map((v) => v.trim()))
+    .map(([latS, lngS]) => ({
+      lat: Number(latS),
+      lng: Number(lngS),
+      radiusM: radius,
+    }))
+    .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+})();
+
 function fmtLastUpdate(iso?: string | null) {
   if (!iso) return "-";
   const d = new Date(iso);
@@ -98,6 +114,86 @@ function buildTripWindowsFromStops(
 ): Array<{ startSec: number; endSec: number }> {
   const items = (Array.isArray(stops) ? stops : [])
     .filter((s) => s?.isNear && typeof s?.startSec === "number")
+    .map((s) => ({
+      startSec: s.startSec as number,
+      endSec: typeof s?.endSec === "number" ? (s.endSec as number) : s.startSec,
+    }))
+    .sort((a, b) => a.startSec - b.startSec);
+  if (!items.length) return [];
+  const trips: Array<{ startSec: number; endSec: number }> = [];
+  let curStart = items[0].startSec;
+  let curEnd = items[0].endSec;
+  let lastStart = items[0].startSec;
+  for (let i = 1; i < items.length; i += 1) {
+    const it = items[i];
+    if (it.startSec - lastStart >= gapSec) {
+      trips.push({ startSec: curStart, endSec: curEnd });
+      curStart = it.startSec;
+      curEnd = it.endSec;
+      lastStart = it.startSec;
+    } else {
+      curEnd = Math.max(curEnd, it.endSec);
+      lastStart = it.startSec;
+    }
+  }
+  trips.push({ startSec: curStart, endSec: curEnd });
+  return trips;
+}
+
+function buildTripWindowsFromStopsNearPoint(
+  stops: any[],
+  target: { lat: number; lng: number; radiusM: number },
+  gapSec = 4 * 3600,
+): Array<{ startSec: number; endSec: number }> {
+  const items = (Array.isArray(stops) ? stops : [])
+    .filter((s) => typeof s?.startSec === "number")
+    .filter((s) => {
+      const lat = typeof s?.lat === "number" ? s.lat : null;
+      const lng = typeof s?.lng === "number" ? s.lng : null;
+      if (lat == null || lng == null) return false;
+      const dist = haversineMeters({ lat, lng }, target);
+      return dist <= target.radiusM;
+    })
+    .map((s) => ({
+      startSec: s.startSec as number,
+      endSec: typeof s?.endSec === "number" ? (s.endSec as number) : s.startSec,
+    }))
+    .sort((a, b) => a.startSec - b.startSec);
+  if (!items.length) return [];
+  const trips: Array<{ startSec: number; endSec: number }> = [];
+  let curStart = items[0].startSec;
+  let curEnd = items[0].endSec;
+  let lastStart = items[0].startSec;
+  for (let i = 1; i < items.length; i += 1) {
+    const it = items[i];
+    if (it.startSec - lastStart >= gapSec) {
+      trips.push({ startSec: curStart, endSec: curEnd });
+      curStart = it.startSec;
+      curEnd = it.endSec;
+      lastStart = it.startSec;
+    } else {
+      curEnd = Math.max(curEnd, it.endSec);
+      lastStart = it.startSec;
+    }
+  }
+  trips.push({ startSec: curStart, endSec: curEnd });
+  return trips;
+}
+
+function buildTripWindowsFromStopsNearPoints(
+  stops: any[],
+  targets: Array<{ lat: number; lng: number; radiusM: number }>,
+  gapSec = 4 * 3600,
+): Array<{ startSec: number; endSec: number }> {
+  if (!targets.length) return [];
+  const items = (Array.isArray(stops) ? stops : [])
+    .filter((s) => typeof s?.startSec === "number")
+    .filter((s) => {
+      const lat = typeof s?.lat === "number" ? s.lat : null;
+      const lng = typeof s?.lng === "number" ? s.lng : null;
+      if (lat == null || lng == null) return false;
+      return targets.some((t) => haversineMeters({ lat, lng }, t) <= t.radiusM);
+    })
     .map((s) => ({
       startSec: s.startSec as number,
       endSec: typeof s?.endSec === "number" ? (s.endSec as number) : s.startSec,
@@ -2041,11 +2137,14 @@ export default function DashboardPage() {
         counts[plate] = Number.isFinite(v) ? v : 0;
         if (withStops && Array.isArray(r?.stops)) {
           const windows = buildTripWindowsFromStops(r.stops);
+          const windowsEtd = ACTUAL_ETD_TARGETS.length
+            ? buildTripWindowsFromStopsNearPoints(r.stops, ACTUAL_ETD_TARGETS)
+            : windows;
           const tripTimes = windows
             .map((w) => fmtTimeWibFromSec(w.startSec))
             .filter((t: string) => t && t !== "-");
-          const tripEtdTimes = windows
-            .map((w) => fmtTimeWibFromSec(w.endSec))
+          const tripEtdTimes = windowsEtd
+            .map((w) => fmtTimeWibFromSec(w.startSec))
             .filter((t: string) => t && t !== "-");
           if (tripTimes.length) {
             arrivals[plate] = tripTimes[0];

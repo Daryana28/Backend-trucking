@@ -5,11 +5,11 @@ export type TripTarget = { lat: number; lng: number; radiusM?: number };
 export const ARRIVAL_COOLDOWN_MIN = 300; // 5 hours default
 
 export const PLATE_TARGET_POINTS: Record<string, TripTarget> = {
-  "T 8854 DH": { lat: -6.19123, lng: 106.92768, radiusM: 5000 },
-  "T 9472 AB": { lat: -6.19118, lng: 106.92391, radiusM: 5000 },
-  "T 9521 AB": { lat: -6.19118, lng: 106.92391, radiusM: 5000 },
-  "T 9473 AB": { lat: -6.35066, lng: 107.28102, radiusM: 5000 },
-  "T 9508 AB": { lat: -6.35066, lng: 107.28102, radiusM: 5000 },
+  "T 8854 DH": { lat: -6.19124, lng: 106.92728, radiusM: 5000 },
+  "T 9472 AB": { lat: -6.19124, lng: 106.92728, radiusM: 5000 },
+  "T 9473 AB": { lat: -6.35071, lng: 107.28118, radiusM: 5000 },
+  "T 9508 AB": { lat: -6.35071, lng: 107.28118, radiusM: 5000 },
+  "T 9521 AB": { lat: 6.19124, lng: 106.92728, radiusM: 5000 },
 };
 
 export const PLATE_COOLDOWN_MIN: Record<string, number> = {
