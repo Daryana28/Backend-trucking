@@ -40,7 +40,7 @@ export async function GET() {
       select: { tripGroup: true },
     });
 
-    const completedTrips = new Set(rows.map((r) => r.tripGroup)).size;
+    const completedTrips = new Set(rows.map((r: any) => r.tripGroup)).size;
 
     return NextResponse.json({
       ok: true,
