@@ -2302,10 +2302,10 @@ export default function DashboardPage() {
         const pickMinTime = (a?: string | null, b?: string | null) => {
           const ma = parseTimeToMin(a ?? null);
           const mb = parseTimeToMin(b ?? null);
-          if (ma == null && mb == null) return a ?? b ?? null;
-          if (ma == null) return b ?? null;
-          if (mb == null) return a ?? null;
-          return ma <= mb ? a ?? null : b ?? null;
+          if (ma == null && mb == null) return (a ?? b ?? "-").toString();
+          if (ma == null) return (b ?? "-").toString();
+          if (mb == null) return (a ?? "-").toString();
+          return (ma <= mb ? a ?? "-" : b ?? "-").toString();
         };
 
         cur.tripCount += tripCount;
