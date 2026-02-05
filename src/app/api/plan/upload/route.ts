@@ -27,15 +27,17 @@ export async function POST(req: Request) {
       rows.map((r) =>
         prisma.planDaily.upsert({
           where: {
-            uniq_plan_daily_date_destination: {
+            uniq_plan_daily_date_destination_tripNo: {
               deliveryDate: r.deliveryDate,
               destination: r.destination,
+              tripNo: r.tripNo,
             },
           },
           create: {
             deliveryDate: r.deliveryDate,
             destination: r.destination,
             group: r.group,
+            tripNo: r.tripNo,
             tripCount: r.tripCount ?? 0,
             forwardEtd: r.forwardEtd || null,
             forwardEta: r.forwardEta || null,
@@ -44,6 +46,7 @@ export async function POST(req: Request) {
           },
           update: {
             group: r.group,
+            tripNo: r.tripNo,
             tripCount: r.tripCount ?? 0,
             forwardEtd: r.forwardEtd || null,
             forwardEta: r.forwardEta || null,

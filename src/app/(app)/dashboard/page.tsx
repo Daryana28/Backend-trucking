@@ -1617,12 +1617,14 @@ function PlanLineActualBarChart({
 
                   {/* axis labels */}
                   <g fontSize="12" fill="#64748B" fontWeight="800">
-                    <text x={padX} y={padTop + 12} textAnchor="start">
-                      {maxY}
-                    </text>
-                    <text x={padX} y={padTop + innerH + 14} textAnchor="start">
-                      0
-                    </text>
+                    {Array.from({ length: maxY + 1 }).map((_, i) => {
+                      const y = toY(i);
+                      return (
+                        <text key={i} x={padX} y={y + 4} textAnchor="start">
+                          Trip {i}
+                        </text>
+                      );
+                    })}
                   </g>
 
                   {/* x labels (destination) - ✅ multiline, tidak diputar supaya tidak kepotong */}
@@ -1821,53 +1823,6 @@ function PlanVsActualChart({
             })}
           </div>
         )}
-      </div>
-    </div>
-  );
-}
-
-function RealtimeMiniBarChart({
-  title,
-  rows,
-  helper,
-}: {
-  title: string;
-  helper?: string;
-  rows: { label: string; value: number; colorClass?: string }[];
-}) {
-  const maxV = Math.max(1, ...rows.map((r) => r.value));
-  return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-      <div className="flex items-center justify-between">
-        <div className="text-sm font-extrabold text-slate-900">{title}</div>
-        {helper ? (
-          <div className="text-[11px] font-semibold text-slate-500">
-            {helper}
-          </div>
-        ) : null}
-      </div>
-      <div className="mt-4 space-y-3">
-        {rows.map((r) => {
-          const w = clamp((r.value / maxV) * 100, 6, 100);
-          return (
-            <div key={r.label} className="flex items-center gap-3">
-              <div className="w-20 text-xs font-semibold text-slate-600">
-                {r.label}
-              </div>
-              <div className="flex-1">
-                <div className="h-3 rounded-full bg-slate-100 overflow-hidden">
-                  <div
-                    className={`h-full rounded-full ${r.colorClass ?? "bg-blue-600"}`}
-                    style={{ width: `${w}%` }}
-                  />
-                </div>
-              </div>
-              <div className="w-10 text-right text-xs font-extrabold text-slate-900">
-                {r.value}
-              </div>
-            </div>
-          );
-        })}
       </div>
     </div>
   );
@@ -2326,15 +2281,38 @@ export default function DashboardPage() {
         const rEtd = normalizeTimeHHmm(p.reverseEtd);
         const rEta = normalizeTimeHHmm(p.reverseEta);
 
-        map[p.destination] = {
-          group: String(p.group ?? "").trim(),
-          tripCount:
-            typeof p.tripCount === "number" && Number.isFinite(p.tripCount)
-              ? Math.max(0, Math.floor(p.tripCount))
-              : 0,
-          forward: { etd: fEtd, eta: fEta },
-          reverse: { etd: rEtd, eta: rEta },
+        const tripCount =
+          typeof p.tripCount === "number" && Number.isFinite(p.tripCount)
+            ? Math.max(0, Math.floor(p.tripCount))
+            : 0;
+        const dest = p.destination;
+        const cur = map[dest];
+
+        if (!cur) {
+          map[dest] = {
+            group: String(p.group ?? "").trim(),
+            tripCount,
+            forward: { etd: fEtd, eta: fEta },
+            reverse: { etd: rEtd, eta: rEta },
+          };
+          continue;
+        }
+
+        // merge duplicates by destination: sum tripCount, pick earliest times
+        const pickMinTime = (a?: string | null, b?: string | null) => {
+          const ma = parseTimeToMin(a ?? null);
+          const mb = parseTimeToMin(b ?? null);
+          if (ma == null && mb == null) return a ?? b ?? null;
+          if (ma == null) return b ?? null;
+          if (mb == null) return a ?? null;
+          return ma <= mb ? a ?? null : b ?? null;
         };
+
+        cur.tripCount += tripCount;
+        cur.forward.etd = pickMinTime(cur.forward.etd, fEtd);
+        cur.forward.eta = pickMinTime(cur.forward.eta, fEta);
+        cur.reverse.etd = pickMinTime(cur.reverse.etd, rEtd);
+        cur.reverse.eta = pickMinTime(cur.reverse.eta, rEta);
       }
 
       setPlanFromDb(map);
@@ -2866,10 +2844,9 @@ export default function DashboardPage() {
           tripByPlate.get(plate) ??
           (customer ? (tripByGroup.get(customer) ?? 0) : 0);
         const trips = arrivalTripsByPlate[plate] ?? [];
-        const actualCount =
-          trips.length > 0
-            ? Math.min(3, trips.length)
-            : (actualBySn[sn] ?? actualBySn[plate] ?? 0);
+        const countFromDb = actualBySn[plate] ?? actualBySn[sn] ?? 0;
+        const countFromTrips = trips.length > 0 ? trips.length : 0;
+        const actualCount = Math.min(3, Math.max(countFromDb, countFromTrips));
         return {
           label,
           planCount,
@@ -2935,27 +2912,6 @@ export default function DashboardPage() {
 
   const movingCount = movingStoppedRows[0]?.value ?? 0;
   const stoppedCount = movingStoppedRows[1]?.value ?? 0;
-
-  const speedBucketRows = useMemo(() => {
-    const buckets = [
-      { label: "0-3", min: 0, max: 3, colorClass: "bg-slate-400" },
-      { label: "3-10", min: 3, max: 10, colorClass: "bg-sky-500" },
-      { label: "10-30", min: 10, max: 30, colorClass: "bg-blue-600" },
-      { label: "30-60", min: 30, max: 60, colorClass: "bg-emerald-600" },
-      { label: "60+", min: 60, max: Infinity, colorClass: "bg-amber-500" },
-    ];
-    const counts = buckets.map((b) => ({ ...b, value: 0 }));
-    for (const d of activeDriversFiltered) {
-      const s = typeof d.speed === "number" ? d.speed : 0;
-      const b = counts.find((x) => s > x.min && s <= x.max) ?? counts[0];
-      b.value += 1;
-    }
-    return counts.map(({ label, value, colorClass }) => ({
-      label,
-      value,
-      colorClass,
-    }));
-  }, [activeDriversFiltered]);
 
   // ✅ rows untuk Plan vs Actual (pakai forward)
   const planVsActualRows = useMemo(() => {
@@ -3414,19 +3370,6 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* ✅ Realtime Insights */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <RealtimeMiniBarChart
-            title="Moving vs Stopped"
-            helper="Realtime"
-            rows={movingStoppedRows}
-          />
-          <RealtimeMiniBarChart
-            title="Speed Distribution"
-            helper="km/h"
-            rows={speedBucketRows}
-          />
-        </div>
       </div>
     </div>
   );

@@ -35,6 +35,7 @@ export async function GET(req: Request) {
         deliveryDate: true,
         destination: true,
         group: true,
+        tripNo: true,
         tripCount: true,
         forwardEtd: true,
         forwardEta: true,

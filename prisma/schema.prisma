@@ -94,6 +94,7 @@ model PlanDaily {
   deliveryDate String   // format: YYYY-MM-DD
   destination  String
   group        String?
+  tripNo       Int      @default(1)
   tripCount    Int      @default(0)
 
   forwardEtd   String?
@@ -104,7 +105,7 @@ model PlanDaily {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  @@unique([deliveryDate, destination], name: "uniq_plan_daily_date_destination")
+  @@unique([deliveryDate, destination, tripNo], name: "uniq_plan_daily_date_destination_tripNo")
   @@index([deliveryDate])
   @@index([destination])
 }

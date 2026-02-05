@@ -4,6 +4,7 @@ type ParsedRow = {
   deliveryDate: string; // YYYY-MM-DD
   destination: string;
   group: string;
+  tripNo: number;
   tripCount: number;
   forwardEtd: string;
   forwardEta: string;
@@ -253,7 +254,7 @@ export function buildPlanTemplateXlsxBuffer() {
   const readme = XLSX.utils.aoa_to_sheet([
     ["NOTE"],
     [
-      "Isi kolom Date (bisa: YYYY-MM-DD, YYYY/MM/DD, DD/MM/YYYY, DD-MM-YYYY), ETD (HH:mm), ETA (HH:mm), dan Trip (angka). Destinasi sudah disediakan.",
+      "Isi kolom Date (bisa: YYYY-MM-DD, YYYY/MM/DD, DD/MM/YYYY, DD-MM-YYYY), ETD (HH:mm), ETA (HH:mm), dan Trip (angka urutan: 1,2,3). Jika 1 truck kirim 2x di hari yang sama, buat 2 baris dengan Trip berbeda.",
     ],
     [""],
     ["Valid destinasi (ikuti template):"],
@@ -267,7 +268,7 @@ export function buildPlanTemplateXlsxBuffer() {
     [""],
     ["Contoh:"],
     [
-      "Date=2026-01-04, Destinasi=T 9473 AB (Yamaha Karawang), ETD=05:00, ETA=08:00, Trip=3",
+      "Date=2026-01-04, Destinasi=T 9473 AB (Yamaha Karawang), ETD=05:00, ETA=08:00, Trip=1",
     ],
   ]);
   readme["!cols"] = [{ wch: 24 }, { wch: 40 }, { wch: 60 }];
@@ -334,7 +335,12 @@ export function parsePlanXlsx(ab: ArrayBuffer) {
     const forwardEta = hasLegacy ? normTime(r.forwardEta) : normTime(r.ETA);
     const reverseEtd = hasLegacy ? normTime(r.reverseEtd) : "";
     const reverseEta = hasLegacy ? normTime(r.reverseEta) : "";
-    const tripCount = hasLegacy ? 0 : normTrip(r.Trip);
+    const tripNoRaw = hasLegacy ? null : normTrip(r.Trip);
+    const tripNo =
+      typeof tripNoRaw === "number" && Number.isFinite(tripNoRaw)
+        ? Math.max(0, Math.floor(tripNoRaw))
+        : 0;
+    const tripCount = hasLegacy ? 0 : 1;
 
     if (!group && destination) {
       const inferred = extractGroupFromDestination(destination);
@@ -358,7 +364,7 @@ export function parsePlanXlsx(ab: ArrayBuffer) {
 
     if (!destination) errors.push(`Line ${line}: destination kosong`);
     if (!group) errors.push(`Line ${line}: group kosong`);
-    if (!hasLegacy && Number.isNaN(tripCount)) {
+    if (!hasLegacy && typeof tripNoRaw === "number" && Number.isNaN(tripNoRaw)) {
       errors.push(`Line ${line}: Trip harus angka`);
     }
 
@@ -388,6 +394,7 @@ export function parsePlanXlsx(ab: ArrayBuffer) {
       deliveryDate,
       destination,
       group,
+      tripNo,
       tripCount: Number.isFinite(tripCount) ? tripCount : 0,
       forwardEtd,
       forwardEta,
@@ -396,13 +403,32 @@ export function parsePlanXlsx(ab: ArrayBuffer) {
     });
   });
 
-  // Deduplicate: deliveryDate + destination
+  // Assign tripNo sequentially per deliveryDate+destination if missing/duplicate
+  const usedByKey = new Map<string, Set<number>>();
+  const nextByKey = new Map<string, number>();
+  for (const r of rows) {
+    const baseKey = `${r.deliveryDate}__${r.destination}`;
+    const used = usedByKey.get(baseKey) ?? new Set<number>();
+    let tripNoFinal = r.tripNo;
+    if (!Number.isFinite(tripNoFinal) || tripNoFinal <= 0 || used.has(tripNoFinal)) {
+      const start = nextByKey.get(baseKey) ?? 1;
+      let n = start;
+      while (used.has(n)) n += 1;
+      tripNoFinal = n;
+      nextByKey.set(baseKey, n + 1);
+    }
+    used.add(tripNoFinal);
+    usedByKey.set(baseKey, used);
+    r.tripNo = tripNoFinal;
+  }
+
+  // Deduplicate: deliveryDate + destination + tripNo
   const seen = new Set<string>();
   for (const r of rows) {
-    const key = `${r.deliveryDate}__${r.destination}`;
+    const key = `${r.deliveryDate}__${r.destination}__${r.tripNo}`;
     if (seen.has(key)) {
       errors.push(
-        `Duplicate: kombinasi deliveryDate + destination sama (${r.deliveryDate} - ${r.destination})`
+        `Duplicate: kombinasi deliveryDate + destination + tripNo sama (${r.deliveryDate} - ${r.destination} - Trip ${r.tripNo})`
       );
     }
     seen.add(key);

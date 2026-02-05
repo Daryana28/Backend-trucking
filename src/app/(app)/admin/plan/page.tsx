@@ -6,6 +6,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 type PlanRow = {
   destination: string;
   group: string; // ✅ DINAMIS: ngikutin excel
+  tripNo?: number;
   tripCount?: number;
 
   // ✅ PLAN TIME (template): ETD/ETA di sini adalah TARGET dari Excel
@@ -42,6 +43,8 @@ type AccuGpsTrackersResponse = {
   data?: AccuGpsTracker[];
 };
 
+type CustomerTargetPoint = { lat: number; lng: number; radiusM?: number };
+
 // ✅ master customer label by plate (harus sama dengan RealtimeMap)
 const CUSTOMER_BY_PLATE: Record<string, string> = {
   "T 9521 AB": "Yamaha Pulogadung Lokal",
@@ -50,6 +53,17 @@ const CUSTOMER_BY_PLATE: Record<string, string> = {
   "T 9508 AB": "Yamaha Karawang",
   "T 9472 AB": "Yamaha Pulogadung Lokal",
 };
+
+// ✅ per-plate target point (customer coordinates)
+const PLATE_TARGET_POINTS: Record<string, CustomerTargetPoint> = {
+  "T 8854 DH": { lat: -6.19123, lng: 106.92768, radiusM: 5000 },
+  "T 9472 AB": { lat: -6.19118, lng: 106.92391, radiusM: 5000 },
+  "T 9521 AB": { lat: -6.19118, lng: 106.92391, radiusM: 5000 },
+  "T 9473 AB": { lat: -6.35066, lng: 107.28102, radiusM: 5000 },
+  "T 9508 AB": { lat: -6.35066, lng: 107.28102, radiusM: 5000 },
+};
+
+const DEFAULT_ARRIVAL_RADIUS_M = 5000;
 
 function normalizePlate(input?: string | null) {
   // normalisasi supaya mapping stabil (spasi, case)
@@ -63,6 +77,28 @@ function normalizePlate(input?: string | null) {
 function getCustomerLabel(plate?: string | null) {
   const key = normalizePlate(plate);
   return CUSTOMER_BY_PLATE[key] ?? "-";
+}
+
+function haversineMeters(
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number },
+) {
+  const R = 6371000;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const h =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+function fmtKm(m?: number | null) {
+  const n = typeof m === "number" && Number.isFinite(m) ? m : null;
+  if (n == null) return "-";
+  return `${(n / 1000).toFixed(2)} km`;
 }
 
 function Badge({
@@ -133,23 +169,60 @@ export default function AdminPlanPage() {
     return Array.from(m.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   }, [plans]);
 
-  const gpsPlates = useMemo(() => {
-    const plates = gpsTrackers
-      .map((t) => normalizePlate(t.alias))
-      .filter((x) => x && x !== "-");
+  const gpsRows = useMemo(() => {
+    const map = new Map<string, AccuGpsTracker>();
+    for (const t of gpsTrackers) {
+      const plate = normalizePlate(t.alias);
+      if (!plate || plate === "-") continue;
+      const curHasCoord =
+        typeof t.latitude === "number" && typeof t.longitude === "number";
+      const prev = map.get(plate);
+      if (!prev) {
+        map.set(plate, t);
+        continue;
+      }
+      const prevHasCoord =
+        typeof prev.latitude === "number" && typeof prev.longitude === "number";
+      if (curHasCoord && !prevHasCoord) {
+        map.set(plate, t);
+      }
+    }
 
-    // unique
-    return Array.from(new Set(plates)).sort((a, b) => a.localeCompare(b));
+    return Array.from(map.entries())
+      .map(([plate, t]) => {
+        const lat = typeof t.latitude === "number" ? t.latitude : null;
+        const lng = typeof t.longitude === "number" ? t.longitude : null;
+        const target = PLATE_TARGET_POINTS[plate] ?? null;
+        const distM =
+          target && lat != null && lng != null
+            ? haversineMeters({ lat, lng }, target)
+            : null;
+        const radius =
+          target?.radiusM ?? DEFAULT_ARRIVAL_RADIUS_M;
+        const arrived =
+          distM != null && Number.isFinite(radius) ? distM <= radius : false;
+
+        return {
+          plate,
+          customer: getCustomerLabel(plate),
+          lat,
+          lng,
+          target,
+          distM,
+          arrived,
+        };
+      })
+      .sort((a, b) => a.plate.localeCompare(b.plate));
   }, [gpsTrackers]);
 
   const gpsCustomerCounts = useMemo(() => {
     const m = new Map<string, number>();
-    for (const p of gpsPlates) {
-      const c = getCustomerLabel(p);
+    for (const r of gpsRows) {
+      const c = r.customer;
       m.set(c, (m.get(c) ?? 0) + 1);
     }
     return Array.from(m.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [gpsPlates]);
+  }, [gpsRows]);
 
   const fetchPlan = async () => {
     try {
@@ -303,7 +376,7 @@ export default function AdminPlanPage() {
 
             {/* ✅ GPS status */}
             <Badge tone={gpsErr ? "red" : "emerald"}>
-              GPS: {gpsErr ? "ERROR" : `${gpsPlates.length} truck`}
+              GPS: {gpsErr ? "ERROR" : `${gpsRows.length} truck`}
             </Badge>
             {gpsLastRefreshed ? (
               <Badge tone="slate">GPS refresh: {gpsLastRefreshed}</Badge>
@@ -454,17 +527,35 @@ export default function AdminPlanPage() {
                   <th className="text-left py-3 px-4 font-extrabold">
                     Customer
                   </th>
+                  <th className="text-left py-3 px-4 font-extrabold">
+                    Status (Target)
+                  </th>
                   <th className="text-left py-3 px-4 font-extrabold">Last</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {gpsPlates.map((p) => (
-                  <tr key={p} className="hover:bg-slate-50">
+                {gpsRows.map((r) => (
+                  <tr key={r.plate} className="hover:bg-slate-50">
                     <td className="py-3 px-4 font-semibold text-slate-900">
-                      {p}
+                      {r.plate}
                     </td>
                     <td className="py-3 px-4">
-                      <Badge tone="slate">{getCustomerLabel(p)}</Badge>
+                      <Badge tone="slate">{r.customer}</Badge>
+                    </td>
+                    <td className="py-3 px-4">
+                      {r.target ? (
+                        r.arrived ? (
+                          <Badge tone="emerald">ARRIVED</Badge>
+                        ) : (
+                          <Badge tone="blue">ON ROUTE</Badge>
+                        )
+                      ) : (
+                        <Badge tone="slate">NO TARGET</Badge>
+                      )}
+                      <div className="mt-1 text-[11px] font-semibold text-slate-500">
+                        Dist: {fmtKm(r.distM)} • R:{" "}
+                        {r.target?.radiusM ?? DEFAULT_ARRIVAL_RADIUS_M}m
+                      </div>
                     </td>
                     <td className="py-3 px-4 text-xs font-semibold text-slate-600">
                       {gpsLastRefreshed ?? "-"}
@@ -472,9 +563,9 @@ export default function AdminPlanPage() {
                   </tr>
                 ))}
 
-                {!gpsLoading && gpsPlates.length === 0 && (
+                {!gpsLoading && gpsRows.length === 0 && (
                   <tr>
-                    <td className="py-5 px-4 text-slate-600" colSpan={3}>
+                    <td className="py-5 px-4 text-slate-600" colSpan={4}>
                       Belum ada truck aktif dari GPS. Cek /api/gps/trackers.
                     </td>
                   </tr>
@@ -510,24 +601,31 @@ export default function AdminPlanPage() {
                     Destination
                   </th>
                   <th className="text-left py-3 px-4 font-extrabold">Group</th>
+                  <th className="text-left py-3 px-4 font-extrabold">Trip</th>
                 </tr>
               </thead>
 
               <tbody className="divide-y divide-slate-200">
                 {plans.map((p) => (
-                  <tr key={p.destination} className="hover:bg-slate-50">
+                  <tr
+                    key={`${p.destination}__${typeof p.tripNo === "number" ? p.tripNo : 0}`}
+                    className="hover:bg-slate-50"
+                  >
                     <td className="py-3 px-4 font-semibold text-slate-900">
                       {p.destination}
                     </td>
                     <td className="py-3 px-4">
                       <Badge tone="slate">{String(p.group ?? "-")}</Badge>
                     </td>
+                    <td className="py-3 px-4 text-xs font-semibold text-slate-700">
+                      {typeof p.tripNo === "number" ? p.tripNo : "-"}
+                    </td>
                   </tr>
                 ))}
 
                 {!loading && plans.length === 0 && (
                   <tr>
-                    <td className="py-5 px-4 text-slate-600" colSpan={2}>
+                    <td className="py-5 px-4 text-slate-600" colSpan={3}>
                       Belum ada plan di DB. Silakan upload Excel.
                     </td>
                   </tr>
