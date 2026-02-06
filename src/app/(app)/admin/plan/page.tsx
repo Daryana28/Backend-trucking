@@ -56,14 +56,14 @@ const CUSTOMER_BY_PLATE: Record<string, string> = {
 
 // ✅ per-plate target point (customer coordinates)
 const PLATE_TARGET_POINTS: Record<string, CustomerTargetPoint> = {
-  "T 8854 DH": { lat: -6.19123, lng: 106.92768, radiusM: 5000 },
-  "T 9472 AB": { lat: -6.19118, lng: 106.92391, radiusM: 5000 },
-  "T 9521 AB": { lat: -6.19118, lng: 106.92391, radiusM: 5000 },
-  "T 9473 AB": { lat: -6.35066, lng: 107.28102, radiusM: 5000 },
-  "T 9508 AB": { lat: -6.35066, lng: 107.28102, radiusM: 5000 },
+  "T 8854 DH": { lat: -6.19122, lng: 106.92744, radiusM: 10000 },
+  "T 9472 AB": { lat: -6.19172, lng: 106.92815, radiusM: 10000 },
+  "T 9521 AB": { lat: -6.19123, lng: 106.92907, radiusM: 10000 },
+  "T 9473 AB": { lat: -6.35097, lng: 107.28283, radiusM: 10000 },
+  "T 9508 AB": { lat: -6.35048, lng: 107.27887, radiusM: 10000 },
 };
 
-const DEFAULT_ARRIVAL_RADIUS_M = 5000;
+const DEFAULT_ARRIVAL_RADIUS_M = 10000;
 
 function normalizePlate(input?: string | null) {
   // normalisasi supaya mapping stabil (spasi, case)

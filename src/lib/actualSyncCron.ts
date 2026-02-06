@@ -25,6 +25,11 @@ export function startActualSyncCron() {
   if (started) return;
   started = true;
 
+  const intervalMinRaw = Number(process.env.ACTUAL_SYNC_INTERVAL_MIN ?? "10");
+  const intervalMin = Number.isFinite(intervalMinRaw)
+    ? Math.max(1, Math.floor(intervalMinRaw))
+    : 10;
+
   const run = async () => {
     const today = dayRangeEpochSecJakarta(null).ymd;
     try {
@@ -52,5 +57,5 @@ export function startActualSyncCron() {
   // run immediately, then every 10 minutes
   runBackfill().catch(() => {});
   run().catch(() => {});
-  setInterval(run, 10 * 60 * 1000);
+  setInterval(run, intervalMin * 60 * 1000);
 }

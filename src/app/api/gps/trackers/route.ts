@@ -2,6 +2,18 @@
 
 import { NextResponse } from "next/server";
 import { accugpsListTrackers, normalizeCoord } from "@/lib/accugps";
+import prisma from "@/lib/prisma";
+import { startActualSyncCron } from "@/lib/actualSyncCron";
+import { syncActualTrips } from "@/lib/actualSync";
+import {
+  ARRIVAL_COOLDOWN_MIN,
+  PLATE_COOLDOWN_MIN,
+  PLATE_TARGET_POINTS,
+  computeTripsFromStops,
+  dayRangeEpochSecJakarta,
+  haversineMeters,
+  normalizePlate,
+} from "@/lib/actualTrips";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,6 +24,9 @@ const LOCAL_CACHE = {
   savedAt: 0, // epoch ms
 };
 const TTL_MS = 12_000; // 12 detik (frontend kamu polling 15 detik)
+const FULL_SYNC_MIN_INTERVAL_MS = 10 * 60 * 1000;
+let lastFullSyncAt = 0;
+let fullSyncInFlight = false;
 
 // speed: provider kadang m/s (di /trackers/location) kadang km/h (di /trackers, tergantung server)
 // kita bikin heuristic biar aman:
@@ -36,7 +51,21 @@ function toNum(v: any) {
   return null;
 }
 
+function normEpochSec(v: any, fallback: number | null) {
+  const n = toNum(v);
+  if (typeof n !== "number" || !Number.isFinite(n)) return fallback;
+  return n > 10_000_000_000 ? Math.floor(n / 1000) : Math.floor(n);
+}
+
 export async function GET() {
+  try {
+    if (process.env.ACTUAL_SYNC_AUTO_START !== "0") {
+      startActualSyncCron();
+    }
+  } catch (e: any) {
+    console.warn("actual sync cron start skipped:", e?.message ?? e);
+  }
+
   const now = Date.now();
 
   // ✅ kalau masih dalam TTL, balikin cache supaya upstream gak kebomb
@@ -110,6 +139,28 @@ export async function GET() {
         };
       })
       .filter(Boolean);
+
+    // ✅ periodic full-day backfill (timeline) to capture earlier stops
+    try {
+      const nowMs = Date.now();
+      if (
+        !fullSyncInFlight &&
+        nowMs - lastFullSyncAt >= FULL_SYNC_MIN_INTERVAL_MS
+      ) {
+        fullSyncInFlight = true;
+        lastFullSyncAt = nowMs;
+        const today = dayRangeEpochSecJakarta(null).ymd;
+        syncActualTrips(today)
+          .catch((e) => {
+            console.error("full sync error:", e);
+          })
+          .finally(() => {
+            fullSyncInFlight = false;
+          });
+      }
+    } catch (e: any) {
+      console.error("full sync trigger error:", e?.message ?? e);
+    }
 
     // ✅ simpan cache kalau ada data valid
     if (mapped.length) {

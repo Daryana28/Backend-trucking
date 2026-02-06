@@ -23,43 +23,30 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, errors }, { status: 400 });
     }
 
-    await prisma.$transaction(
-      rows.map((r) =>
-        prisma.planDaily.upsert({
-          where: {
-            uniq_plan_daily_date_destination_tripNo: {
-              deliveryDate: r.deliveryDate,
-              destination: r.destination,
-              tripNo: r.tripNo,
-            },
-          },
-          create: {
-            deliveryDate: r.deliveryDate,
-            destination: r.destination,
-            group: r.group,
-            tripNo: r.tripNo,
-            tripCount: r.tripCount ?? 0,
-            forwardEtd: r.forwardEtd || null,
-            forwardEta: r.forwardEta || null,
-            reverseEtd: r.reverseEtd || null,
-            reverseEta: r.reverseEta || null,
-          },
-          update: {
-            group: r.group,
-            tripNo: r.tripNo,
-            tripCount: r.tripCount ?? 0,
-            forwardEtd: r.forwardEtd || null,
-            forwardEta: r.forwardEta || null,
-            reverseEtd: r.reverseEtd || null,
-            reverseEta: r.reverseEta || null,
-          },
-        })
-      )
-    );
-
     const uniqueDates = Array.from(
       new Set(rows.map((r) => String(r.deliveryDate ?? "").trim()).filter(Boolean)),
     ).sort();
+
+    await prisma.$transaction(async (tx) => {
+      if (uniqueDates.length) {
+        await tx.planDaily.deleteMany({
+          where: { deliveryDate: { in: uniqueDates } },
+        });
+      }
+      await tx.planDaily.createMany({
+        data: rows.map((r) => ({
+          deliveryDate: r.deliveryDate,
+          destination: r.destination,
+          group: r.group,
+          tripNo: r.tripNo,
+          tripCount: r.tripCount ?? 0,
+          forwardEtd: r.forwardEtd || null,
+          forwardEta: r.forwardEta || null,
+          reverseEtd: r.reverseEtd || null,
+          reverseEta: r.reverseEta || null,
+        })),
+      });
+    });
 
     return NextResponse.json({
       ok: true,

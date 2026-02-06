@@ -309,7 +309,7 @@ type CustomerTargetPoint = { lat: number; lng: number; radiusM?: number };
 
 const ARRIVAL_RADIUS_M = 2000;
 const HISTORY_STOP_RADIUS_M = 1000;
-const ARRIVAL_COOLDOWN_MIN = 300;
+const ARRIVAL_COOLDOWN_MIN = 180;
 const GEO_ADDR_CACHE_TTL_MS = 10 * 60 * 1000;
 const STOP_CACHE_TTL_MS = 2 * 60 * 60 * 1000;
 
@@ -338,11 +338,11 @@ const CUSTOMER_DEST_POINTS: Record<string, CustomerTargetPoint | null> = {
 
 // ✅ per-plate override target (higher priority than customer target)
 const PLATE_TARGET_POINTS: Record<string, CustomerTargetPoint> = {
-  "T 8854 DH": { lat: -6.19123, lng: 106.92768, radiusM: 5000 },
-  "T 9472 AB": { lat: -6.19118, lng: 106.92391, radiusM: 5000 },
-  "T 9521 AB": { lat: -6.19118, lng: 106.92391, radiusM: 5000 },
-  "T 9473 AB": { lat: -6.35066, lng: 107.28102, radiusM: 5000 },
-  "T 9508 AB": { lat: -6.35066, lng: 107.28102, radiusM: 5000 },
+  "T 8854 DH": { lat: -6.19122, lng: 106.92744, radiusM: 10000 },
+  "T 9472 AB": { lat: -6.19172, lng: 106.92815, radiusM: 10000 },
+  "T 9521 AB": { lat: -6.19123, lng: 106.92907, radiusM: 10000 },
+  "T 9473 AB": { lat: -6.35097, lng: 107.28283, radiusM: 10000 },
+  "T 9508 AB": { lat: -6.35048, lng: 107.27887, radiusM: 10000 },
 };
 
 const PLATE_COOLDOWN_MIN: Record<string, number> = {};
@@ -762,6 +762,7 @@ const PLAN_BY_DEST: Record<
 type PlanFromDbRow = {
   destination: string;
   group: string;
+  tripNo?: number | null;
   tripCount?: number | null;
   forwardEtd: string | null;
   forwardEta: string | null;
@@ -774,6 +775,7 @@ type PlanMap = Record<
   {
     group: string;
     tripCount: number;
+    tripNoMax?: number;
     forward: { etd: string; eta: string };
     reverse: { etd: string; eta: string };
   }
@@ -1127,6 +1129,7 @@ function PlanLineActualBarChart({
   delayThresholdMin?: number;
 }) {
   const [hoverBarIndex, setHoverBarIndex] = useState<number | null>(null);
+  const enableHover = false;
   // ✅ dibuat lebih tinggi + lebar supaya grafik memenuhi card
   const width = Math.max(900, rows.length * 220);
   const height = 320;
@@ -1256,14 +1259,22 @@ function PlanLineActualBarChart({
                       const planEta = planEtaByPlate?.[plate] ?? "";
                       const actualEta = actualEtaByPlate?.[plate] ?? "";
                       const tripTimes = actualTripsByPlate?.[plate] ?? [];
+                      const tripEtdTimes =
+                        actualEtdTripsByPlate?.[plate] ?? [];
+                      const tripPairs = tripTimes
+                        .map((eta, idx) => ({
+                          eta,
+                          etd: tripEtdTimes[idx] ?? "",
+                        }))
+                        .filter((p) => parseTimeToMin(p.eta) != null);
                       const planMin = parseTimeToMin(planEta);
                       const actualMin = parseTimeToMin(actualEta);
                       const tripDeltas =
                         planMin == null
                           ? []
-                          : tripTimes
+                          : tripPairs
                               .map((t) => {
-                                const m = parseTimeToMin(t);
+                                const m = parseTimeToMin(t.eta);
                                 return m == null ? null : m - planMin;
                               })
                               .filter((v): v is number => v != null);
@@ -1283,24 +1294,25 @@ function PlanLineActualBarChart({
                         delayMinRaw != null && delayMinRaw >= delayThresholdMin;
                       const isOnTime =
                         delayMinRaw != null && delayMinRaw < delayThresholdMin;
-                      const segColor = (idx: number, fallback: string) => {
-                        const t = tripTimes[idx];
-                        if (!t) return fallback;
+                      const segColor = (idx: number) => {
+                        const t = tripPairs[idx]?.eta ?? "";
+                        if (!t) return "#16A34A";
                         const m = parseTimeToMin(t);
-                        if (planMin == null || m == null) return fallback;
+                        if (planMin == null || m == null) return "#16A34A";
                         return m - planMin >= delayThresholdMin
                           ? "#DC2626"
                           : "#16A34A";
                       };
                       const isHover = hoverBarIndex === i;
                       const setHoverTrip = (idx: number) => {
+                        if (!enableHover) return;
                         setHoverBarIndex(i);
                         if (onBarInfo) {
                           onBarInfo(
                             {
                               ...r,
                               tripIndex: idx + 1,
-                              tripTime: tripTimes[idx],
+                              tripTime: tripPairs[idx]?.eta ?? "",
                             },
                             i,
                           );
@@ -1315,10 +1327,12 @@ function PlanLineActualBarChart({
                             transition: "transform 140ms ease",
                           }}
                           onMouseEnter={() => {
+                            if (!enableHover) return;
                             setHoverBarIndex(i);
                             if (onBarInfo) return onBarInfo(r, i);
                           }}
                           onMouseLeave={() => {
+                            if (!enableHover) return;
                             setHoverBarIndex(null);
                             if (onBarInfo) return onBarInfo(r, -1);
                           }}
@@ -1334,7 +1348,7 @@ function PlanLineActualBarChart({
                                 width={barW}
                                 height={barH / 3}
                                 rx={10}
-                                fill={segColor(2, "#FACC15")}
+                                fill={segColor(2)}
                                 opacity={barOpacity}
                                 style={{
                                   filter: isHover
@@ -1358,7 +1372,7 @@ function PlanLineActualBarChart({
                                 width={barW}
                                 height={barH / 3}
                                 rx={10}
-                                fill={segColor(1, "#2563EB")}
+                                fill={segColor(1)}
                                 opacity={barOpacity}
                                 style={{
                                   filter: isHover
@@ -1382,7 +1396,7 @@ function PlanLineActualBarChart({
                                 width={barW}
                                 height={barH / 3}
                                 rx={10}
-                                fill={segColor(0, "#16A34A")}
+                                fill={segColor(0)}
                                 opacity={barOpacity}
                                 style={{
                                   filter: isHover
@@ -1409,7 +1423,7 @@ function PlanLineActualBarChart({
                                 width={barW}
                                 height={barH / 2}
                                 rx={10}
-                                fill={segColor(1, "#2563EB")}
+                                fill={segColor(1)}
                                 opacity={barOpacity}
                                 style={{
                                   filter: isHover
@@ -1433,7 +1447,7 @@ function PlanLineActualBarChart({
                                 width={barW}
                                 height={barH / 2}
                                 rx={10}
-                                fill={segColor(0, "#16A34A")}
+                                fill={segColor(0)}
                                 opacity={barOpacity}
                                 style={{
                                   filter: isHover
@@ -1459,7 +1473,7 @@ function PlanLineActualBarChart({
                               width={barW}
                               height={barH}
                               rx={10}
-                              fill={segColor(0, "#16A34A")}
+                              fill={segColor(0)}
                               opacity={barOpacity}
                               style={{
                                 filter: isHover
@@ -1488,7 +1502,8 @@ function PlanLineActualBarChart({
                   </g>
 
                   {/* tooltip (earliest arrival time) */}
-                  {tooltipIndex != null &&
+                  {enableHover &&
+                  tooltipIndex != null &&
                   tooltipIndex >= 0 &&
                   tooltipIndex < rows.length &&
                   tooltipText
@@ -1866,6 +1881,9 @@ export default function DashboardPage() {
   const [planGroupFilter, setPlanGroupFilter] = useState<string>("ALL");
 
   const [planFromDb, setPlanFromDb] = useState<PlanMap | null>(null);
+  const [planTripsByPlate, setPlanTripsByPlate] = useState<
+    Record<string, Array<{ tripNo: number; etd: string; eta: string }>>
+  >({});
 
   const [latest, setLatest] = useState<DriverStatus[]>([]);
 
@@ -1971,6 +1989,16 @@ export default function DashboardPage() {
     Record<string, string[]>
   >({});
   const [historyDownloading, setHistoryDownloading] = useState(false);
+  const [eventPlateFilter, setEventPlateFilter] = useState<string>("ALL");
+  const [eventRows, setEventRows] = useState<any[]>([]);
+  const [eventLoading, setEventLoading] = useState(false);
+  const [eventErr, setEventErr] = useState<string | null>(null);
+  const [arrivalByPlateEvt, setArrivalByPlateEvt] = useState<
+    Record<string, string[]>
+  >({});
+  const [departureByPlateEvt, setDepartureByPlateEvt] = useState<
+    Record<string, string[]>
+  >({});
   const [selectedArrivalInfo, setSelectedArrivalInfo] = useState<string | null>(
     null,
   );
@@ -2097,20 +2125,59 @@ export default function DashboardPage() {
         const v = Number(r?.tripCount ?? 0);
         counts[plate] = Number.isFinite(v) ? v : 0;
         if (withStops && Array.isArray(r?.stops)) {
-          const windows = buildTripWindowsFromStops(r.stops);
-          const windowsEtd = ACTUAL_ETD_TARGETS.length
-            ? buildTripWindowsFromStopsNearPoints(r.stops, ACTUAL_ETD_TARGETS)
+          const { startSec: dayStartSec, endSec: dayEndSec } =
+            dayRangeEpochSecWib(day);
+          const stopsDay = [...r.stops].filter((s: any) => {
+            const t = typeof s?.startSec === "number" ? s.startSec : null;
+            if (t == null) return false;
+            return t >= dayStartSec && t < dayEndSec;
+          });
+          const stopsSorted = stopsDay.sort((a: any, b: any) => {
+            const sa = typeof a?.startSec === "number" ? a.startSec : 0;
+            const sb = typeof b?.startSec === "number" ? b.startSec : 0;
+            return sa - sb;
+          });
+          const windows = buildTripWindowsFromStops(stopsSorted).filter((w) => {
+            const s = typeof w.startSec === "number" ? w.startSec : null;
+            const e = typeof w.endSec === "number" ? w.endSec : s;
+            if (s == null || e == null) return false;
+            return (
+              s >= dayStartSec &&
+              s < dayEndSec &&
+              e >= dayStartSec &&
+              e < dayEndSec
+            );
+          });
+          let windowsEtd = ACTUAL_ETD_TARGETS.length
+            ? buildTripWindowsFromStopsNearPoints(stopsSorted, ACTUAL_ETD_TARGETS)
             : windows;
+          if (!windowsEtd.length) windowsEtd = windows;
           const tripTimes = windows
             .map((w) => fmtTimeWibFromSec(w.startSec))
-            .filter((t: string) => t && t !== "-");
+            .filter((t: string) => t && t !== "-")
+            .sort();
           const tripEtdTimes = windowsEtd
-            .map((w) => fmtTimeWibFromSec(w.startSec))
+            .map((w) => fmtTimeWibFromSec(w.endSec ?? w.startSec))
             .filter((t: string) => t && t !== "-");
-          if (tripTimes.length) {
-            arrivals[plate] = tripTimes[0];
-            arrivalsByPlate[plate] = tripTimes;
-            departuresByPlate[plate] = tripEtdTimes;
+
+          // Remove cross-day pairs (ETD > ETA)
+          const filteredTripTimes: string[] = [];
+          const filteredTripEtdTimes: string[] = [];
+          for (let i = 0; i < Math.max(tripTimes.length, tripEtdTimes.length); i += 1) {
+            const eta = tripTimes[i] ?? "";
+            const etd = tripEtdTimes[i] ?? "";
+            const etaMin = parseTimeToMin(eta);
+            const etdMin = parseTimeToMin(etd);
+            if (etaMin != null && etdMin != null && etdMin > etaMin) {
+              continue;
+            }
+            if (eta) filteredTripTimes.push(eta);
+            if (etd) filteredTripEtdTimes.push(etd);
+          }
+          if (filteredTripTimes.length || filteredTripEtdTimes.length) {
+            arrivals[plate] = filteredTripTimes[0] ?? "";
+            arrivalsByPlate[plate] = filteredTripTimes;
+            departuresByPlate[plate] = filteredTripEtdTimes;
           }
         }
       }
@@ -2268,10 +2335,15 @@ export default function DashboardPage() {
 
       if (!plans.length) {
         setPlanFromDb(null);
+        setPlanTripsByPlate({});
         return;
       }
 
       const map: PlanMap = {};
+      const tripsByPlate: Record<
+        string,
+        Array<{ tripNo: number; etd: string; eta: string }>
+      > = {};
 
       for (const p of plans) {
         if (!p?.destination) continue;
@@ -2285,13 +2357,25 @@ export default function DashboardPage() {
           typeof p.tripCount === "number" && Number.isFinite(p.tripCount)
             ? Math.max(0, Math.floor(p.tripCount))
             : 0;
+        const tripNo =
+          typeof p.tripNo === "number" && Number.isFinite(p.tripNo)
+            ? Math.max(0, Math.floor(p.tripNo))
+            : 0;
         const dest = p.destination;
+        const plate = extractPlateFromDestination(dest);
+
+        if (plate && plate !== "-" && tripNo > 0) {
+          const arr = tripsByPlate[plate] ?? [];
+          arr.push({ tripNo, etd: fEtd, eta: fEta });
+          tripsByPlate[plate] = arr;
+        }
         const cur = map[dest];
 
         if (!cur) {
           map[dest] = {
             group: String(p.group ?? "").trim(),
             tripCount,
+            tripNoMax: tripNo,
             forward: { etd: fEtd, eta: fEta },
             reverse: { etd: rEtd, eta: rEta },
           };
@@ -2309,13 +2393,21 @@ export default function DashboardPage() {
         };
 
         cur.tripCount += tripCount;
+        cur.tripNoMax = Math.max(cur.tripNoMax ?? 0, tripNo);
         cur.forward.etd = pickMinTime(cur.forward.etd, fEtd);
         cur.forward.eta = pickMinTime(cur.forward.eta, fEta);
         cur.reverse.etd = pickMinTime(cur.reverse.etd, rEtd);
         cur.reverse.eta = pickMinTime(cur.reverse.eta, rEta);
       }
 
+      for (const plate of Object.keys(tripsByPlate)) {
+        tripsByPlate[plate] = tripsByPlate[plate]
+          .filter((r) => r.tripNo > 0)
+          .sort((a, b) => a.tripNo - b.tripNo);
+      }
+
       setPlanFromDb(map);
+      setPlanTripsByPlate(tripsByPlate);
     } catch {}
   };
 
@@ -2348,6 +2440,79 @@ export default function DashboardPage() {
 
   useEffect(() => {
     deliveryDateRef.current = deliveryDateFilter;
+  }, [deliveryDateFilter]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      try {
+        setEventErr(null);
+        setEventLoading(true);
+        const day = deliveryDateFilter ?? todayWIB();
+        const plate =
+          eventPlateFilter && eventPlateFilter !== "ALL"
+            ? eventPlateFilter
+            : "";
+        const qs = new URLSearchParams({
+          date: day,
+          ...(plate ? { plate } : {}),
+          limit: "2000",
+        });
+        const res = await fetch(`/api/actual/events?${qs.toString()}`, {
+          cache: "no-store",
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        if (cancelled) return;
+        const rows = Array.isArray(json?.rows) ? json.rows : [];
+        setEventRows(rows);
+      } catch (e: any) {
+        if (!cancelled) {
+          setEventRows([]);
+          setEventErr(e?.message ?? "Gagal load event");
+        }
+      } finally {
+        if (!cancelled) setEventLoading(false);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [deliveryDateFilter, eventPlateFilter]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const day = deliveryDateFilter ?? todayWIB();
+        const res = await fetch(`/api/actual/arrival?date=${day}`, {
+          cache: "no-store",
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        if (cancelled) return;
+        setArrivalByPlateEvt(
+          typeof json?.arrivals === "object" && json.arrivals
+            ? json.arrivals
+            : {},
+        );
+        setDepartureByPlateEvt(
+          typeof json?.departures === "object" && json.departures
+            ? json.departures
+            : {},
+        );
+      } catch {
+        if (!cancelled) {
+          setArrivalByPlateEvt({});
+          setDepartureByPlateEvt({});
+        }
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
   }, [deliveryDateFilter]);
 
   useEffect(() => {
@@ -2780,6 +2945,7 @@ export default function DashboardPage() {
       map[dest] = {
         group: PLAN_BY_DEST[dest].group,
         tripCount: 0,
+        tripNoMax: 0,
         forward: { etd: PLAN_BY_DEST[dest].etd, eta: PLAN_BY_DEST[dest].eta },
         reverse: { etd: PLAN_BY_DEST[dest].etd, eta: PLAN_BY_DEST[dest].eta },
       };
@@ -2800,6 +2966,19 @@ export default function DashboardPage() {
     return Array.from(s).sort((a, b) => a.localeCompare(b));
   }, [activeDrivers, historyRows]);
 
+  const eventPlateOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const d of activeDriversFiltered) {
+      const p = normalizePlate(d.plate);
+      if (p && p !== "-") set.add(p);
+    }
+    for (const dest of Object.keys(effectivePlan)) {
+      const p = extractPlateFromDestination(dest);
+      if (p && p !== "-") set.add(p);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [activeDriversFiltered, effectivePlan]);
+
   const groupByDestination = useMemo(() => {
     const m = new Map<string, string>();
     for (const r of dashboardHistoryRows) {
@@ -2818,18 +2997,19 @@ export default function DashboardPage() {
       const plan = effectivePlan[dest];
       const g = String(plan?.group ?? "").trim();
       if (!g) continue;
-      const v = Number(plan?.tripCount ?? 0);
-      const next = (tripByGroup.get(g) ?? 0) + (Number.isFinite(v) ? v : 0);
-      tripByGroup.set(g, next);
+      const tripNo = Number(plan?.tripNoMax ?? plan?.tripCount ?? 0);
+      const cur = tripByGroup.get(g) ?? 0;
+      if (Number.isFinite(tripNo) && tripNo > cur) tripByGroup.set(g, tripNo);
     }
     const tripByPlate = new Map<string, number>();
     for (const dest of Object.keys(effectivePlan)) {
       const plan = effectivePlan[dest];
       const plate = extractPlateFromDestination(dest);
       if (!plate || plate === "-") continue;
-      const v = Number(plan?.tripCount ?? 0);
-      const next = (tripByPlate.get(plate) ?? 0) + (Number.isFinite(v) ? v : 0);
-      tripByPlate.set(plate, next);
+      const tripNo = Number(plan?.tripNoMax ?? plan?.tripCount ?? 0);
+      const cur = tripByPlate.get(plate) ?? 0;
+      if (Number.isFinite(tripNo) && tripNo > cur)
+        tripByPlate.set(plate, tripNo);
     }
 
     const rows = driversForActual
@@ -2843,10 +3023,25 @@ export default function DashboardPage() {
         const planCount =
           tripByPlate.get(plate) ??
           (customer ? (tripByGroup.get(customer) ?? 0) : 0);
-        const trips = arrivalTripsByPlate[plate] ?? [];
+      const tripsRaw = arrivalByPlateEvt[plate] ?? [];
+      const tripsEtdRaw = departureByPlateEvt[plate] ?? [];
+      const trips = tripsRaw.filter((t) => parseTimeToMin(t) != null);
+      const tripsEtd = tripsEtdRaw.filter((t) => parseTimeToMin(t) != null);
+        const validTripCount = (() => {
+          let c = 0;
+          for (let i = 0; i < Math.max(trips.length, tripsEtd.length); i += 1) {
+            const eta = trips[i] ?? "";
+            const etd = tripsEtd[i] ?? "";
+            const etaMin = parseTimeToMin(eta);
+            const etdMin = parseTimeToMin(etd);
+            if (etaMin == null) continue; // hide bars if ETA "-"
+            if (etdMin != null && etdMin > etaMin) continue;
+            c += 1;
+          }
+          return c;
+        })();
         const countFromDb = actualBySn[plate] ?? actualBySn[sn] ?? 0;
-        const countFromTrips = trips.length > 0 ? trips.length : 0;
-        const actualCount = Math.min(3, Math.max(countFromDb, countFromTrips));
+        const actualCount = Math.min(3, validTripCount);
         return {
           label,
           planCount,
@@ -2858,7 +3053,14 @@ export default function DashboardPage() {
       })
       .sort((a, b) => a.label.localeCompare(b.label));
     return rows;
-  }, [driversForActual, actualBySn, effectivePlan, arrivalTripsByPlate]);
+  }, [
+    driversForActual,
+    actualBySn,
+    effectivePlan,
+    arrivalByPlateEvt,
+    departureByPlateEvt,
+    planTripsByPlate,
+  ]);
 
   const planEtaByPlate = useMemo(() => {
     const map: Record<string, string> = {};
@@ -2897,6 +3099,75 @@ export default function DashboardPage() {
     }
     return map;
   }, [effectivePlan]);
+
+  const arrivalSummaryRows = useMemo(() => {
+    const plates = new Set<string>();
+    for (const d of driversForActual) {
+      const p = normalizePlate(d.plate);
+      if (p && p !== "-") plates.add(p);
+    }
+    for (const dest of Object.keys(effectivePlan)) {
+      const p = extractPlateFromDestination(dest);
+      if (p && p !== "-") plates.add(p);
+    }
+
+    return Array.from(plates)
+      .sort((a, b) => a.localeCompare(b))
+      .flatMap((plate) => {
+        const customer = getCustomerLabelByPlate(plate);
+        const actualEtaList = arrivalByPlateEvt[plate] ?? [];
+        const actualEtdList = departureByPlateEvt[plate] ?? [];
+        const tripCount = Math.max(
+          actualEtaList.length,
+          actualEtdList.length,
+          1,
+        );
+        const rows: any[] = [];
+
+        for (let i = 0; i < tripCount; i += 1) {
+          const planTrip = planTripsByPlate[plate]?.[i] ?? null;
+          const planEta = planTrip?.eta ?? planEtaByPlate[plate] ?? "";
+          const planEtd = planTrip?.etd ?? planEtdByPlate[plate] ?? "";
+          const actualEta = actualEtaList[i] ?? "";
+          const actualEtd = actualEtdList[i] ?? "";
+          const planEtaMin = parseTimeToMin(planEta);
+          const actualEtaMin = parseTimeToMin(actualEta);
+          const delayMin =
+            planEtaMin != null && actualEtaMin != null
+              ? Math.max(0, actualEtaMin - planEtaMin)
+              : null;
+          const status =
+            !planEta
+              ? "NO PLAN"
+              : !actualEta
+                ? "NOT ARRIVED"
+                : delayMin != null && delayMin >= 30
+                  ? "DELAY"
+                  : "ON TIME";
+
+          rows.push({
+            plate,
+            tripNo: i + 1,
+            customer,
+            planEtd,
+            planEta,
+            actualEtd,
+            actualEta,
+            delayMin,
+            status,
+          });
+        }
+
+        return rows;
+      });
+  }, [
+    driversForActual,
+    effectivePlan,
+    planEtaByPlate,
+    planEtdByPlate,
+    arrivalByPlateEvt,
+    departureByPlateEvt,
+  ]);
 
   const movingStoppedRows = useMemo(() => {
     const total = activeDriversFiltered.length;
@@ -3289,8 +3560,14 @@ export default function DashboardPage() {
                   const actualEta = arrivalByPlate[plate] ?? "";
                   const planEta = planEtaByPlate[plate] ?? "";
                   const planEtd = planEtdByPlate[plate] ?? "";
-                  const trips = arrivalTripsByPlate[plate] ?? [];
-                  const tripsEtd = departureTripsByPlate[plate] ?? [];
+                  const tripsRaw = arrivalTripsByPlate[plate] ?? [];
+                  const tripsEtdRaw = departureTripsByPlate[plate] ?? [];
+                  const tripPairs = tripsRaw
+                    .map((eta, idx) => ({
+                      eta,
+                      etd: tripsEtdRaw[idx] ?? "",
+                    }))
+                    .filter((p) => parseTimeToMin(p.eta) != null);
                   const planDot = planEta ? formatTimeDot(planEta) : "-";
                   const tripIdx =
                     (row.tripIndex ? row.tripIndex - 1 : 0) >= 0
@@ -3299,8 +3576,21 @@ export default function DashboardPage() {
                         : 0
                       : 0;
                   const chosenTrip =
-                    row.tripTime || trips[tripIdx] || trips[0] || actualEta;
-                  const chosenEtd = tripsEtd[tripIdx] || tripsEtd[0] || "";
+                    row.tripTime ||
+                    tripPairs[tripIdx]?.eta ||
+                    tripPairs[0]?.eta ||
+                    actualEta;
+                  const chosenEtd =
+                    tripPairs[tripIdx]?.etd || tripPairs[0]?.etd || "";
+                  const chosenEtdMin = parseTimeToMin(chosenEtd);
+                  const chosenEtaMin = parseTimeToMin(chosenTrip);
+                  // if ETD time is later than ETA time, treat as cross-day and ignore actual
+                  const crossDay =
+                    chosenEtdMin != null &&
+                    chosenEtaMin != null &&
+                    chosenEtdMin > chosenEtaMin;
+                  const finalEtd = crossDay ? "" : chosenEtd;
+                  const finalEta = crossDay ? "" : chosenTrip;
                   const chosenDot = chosenTrip
                     ? formatTimeDot(chosenTrip)
                     : "-";
@@ -3308,9 +3598,9 @@ export default function DashboardPage() {
                     planEtd || "-",
                   )} | ETA: ${planDot}`;
                   const actualLine = `Actual ETD: ${formatTimeDot(
-                    chosenEtd || "-",
-                  )} | ETA: ${chosenDot}`;
-                  const label = chosenTrip
+                    finalEtd || "-",
+                  )} | ETA: ${finalEta ? formatTimeDot(finalEta) : "-"}`;
+                  const label = finalEta
                     ? `${planLine} • ${actualLine}`
                     : planEta
                       ? planLine
@@ -3324,8 +3614,8 @@ export default function DashboardPage() {
                 tooltipSource={selectedArrivalSource}
                 planEtaByPlate={planEtaByPlate}
                 actualEtaByPlate={arrivalByPlate}
-                actualTripsByPlate={arrivalTripsByPlate}
-                actualEtdTripsByPlate={departureTripsByPlate}
+                actualTripsByPlate={arrivalByPlateEvt}
+                actualEtdTripsByPlate={departureByPlateEvt}
                 delayThresholdMin={30}
               />
             </div>
@@ -3367,6 +3657,208 @@ export default function DashboardPage() {
                 )}
               </div>
             ) : null}
+          </div>
+        </div>
+
+        {/* ✅ Arrival Summary per Plate */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="text-sm font-extrabold text-slate-900">
+            Arrival Summary (Per Truck)
+          </div>
+          <div className="text-xs font-medium text-slate-600">
+          </div>
+
+          <div className="mt-4 overflow-auto rounded-2xl border border-slate-200 bg-white shadow-[0_8px_24px_rgba(15,23,42,0.06)]">
+            <table className="w-full text-sm">
+              <thead className="bg-gradient-to-r from-slate-50 via-white to-slate-50 text-slate-700">
+                <tr className="border-b border-slate-200 text-[13px]">
+                  <th className="text-left py-2 px-3 font-extrabold" rowSpan={2}>
+                    Plate
+                  </th>
+                  <th className="text-center py-2 px-3 font-extrabold" colSpan={2}>
+                    PLAN
+                  </th>
+                  <th className="text-center py-2 px-3 font-extrabold" colSpan={2}>
+                    ACTUAL
+                  </th>
+                </tr>
+                <tr className="border-b border-slate-200">
+                  <th className="text-center py-2 px-3 font-extrabold">ETD</th>
+                  <th className="text-center py-2 px-3 font-extrabold">ETA</th>
+                  <th className="text-center py-2 px-3 font-extrabold">ETD</th>
+                  <th className="text-center py-2 px-3 font-extrabold">ETA</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {arrivalSummaryRows.map((r, idx) => {
+                  const actualClass =
+                    r.status === "ON TIME"
+                      ? "bg-emerald-200 text-emerald-900"
+                      : r.status === "DELAY"
+                        ? "bg-rose-200 text-rose-900"
+                        : r.status === "NOT ARRIVED"
+                          ? "bg-slate-100 text-slate-700"
+                          : "bg-slate-100 text-slate-700";
+                  const hasActual = Boolean(r.actualEta || r.actualEtd);
+                  const actualClassFinal = hasActual ? actualClass : "bg-slate-100 text-slate-700";
+                  const rowBase = idx % 2 === 0 ? "bg-white" : "bg-slate-50/60";
+                  return (
+                    <tr key={`${r.plate}-${r.tripNo}`} className={rowBase}>
+                      <td className="py-3 px-4 font-semibold text-slate-900">
+                        <div className="flex items-center gap-2">
+                          <span className="rounded-lg bg-slate-900/90 px-2 py-1 text-[10px] font-extrabold text-white">
+                            {r.plate}
+                          </span>
+                          <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-bold text-slate-600">
+                            Trip {r.tripNo}
+                          </span>
+                        </div>
+                        {r.customer ? (
+                          <div className="mt-1 text-[12px] font-medium text-slate-600">
+                            ({r.customer})
+                          </div>
+                        ) : null}
+                      </td>
+                      <td className="py-3 px-4 text-center font-semibold text-slate-800">
+                        <span className="inline-flex min-w-[72px] justify-center rounded-full border border-slate-200 bg-slate-100 px-3 py-1.5 shadow-sm">
+                          {formatTimeDot(r.planEtd || "-")}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 text-center font-semibold text-slate-800">
+                        <span className="inline-flex min-w-[72px] justify-center rounded-full border border-slate-200 bg-slate-100 px-3 py-1.5 shadow-sm">
+                          {formatTimeDot(r.planEta || "-")}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 text-center font-semibold">
+                        <span className={`inline-flex min-w-[84px] justify-center rounded-full border border-white/60 px-3 py-1.5 shadow-sm ${actualClassFinal}`}>
+                          {formatTimeDot(r.actualEtd || "-")}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 text-center font-semibold">
+                        <span className={`inline-flex min-w-[84px] justify-center rounded-full border border-white/60 px-3 py-1.5 shadow-sm ${actualClassFinal}`}>
+                          {formatTimeDot(r.actualEta || "-")}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {arrivalSummaryRows.length === 0 ? (
+                  <tr>
+                    <td className="py-4 px-3 text-slate-600" colSpan={5}>
+                      Tidak ada data untuk tanggal ini.
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* ✅ Trip Events Table */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <div className="text-sm font-extrabold text-slate-900">
+                Trip Events (Stop & Drive)
+              </div>
+              <div className="text-xs font-medium text-slate-600">
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <select
+                value={eventPlateFilter}
+                onChange={(e) => setEventPlateFilter(e.target.value)}
+                className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 outline-none"
+              >
+                <option value="ALL">All Plates</option>
+                {eventPlateOptions.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
+              {eventLoading ? (
+                <span className="text-xs font-semibold text-slate-500">
+                  Loading...
+                </span>
+              ) : null}
+            </div>
+          </div>
+
+          {eventErr ? (
+            <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
+              {eventErr}
+            </div>
+          ) : null}
+
+          <div className="mt-4 overflow-auto rounded-xl border border-slate-200">
+            <table className="w-full text-xs">
+              <thead className="bg-slate-50 text-slate-700">
+                <tr className="border-b border-slate-200">
+                  <th className="text-left py-2 px-3 font-extrabold">Plate</th>
+                  <th className="text-left py-2 px-3 font-extrabold">Type</th>
+                  <th className="text-left py-2 px-3 font-extrabold">
+                    Start Time
+                  </th>
+                  <th className="text-left py-2 px-3 font-extrabold">
+                    End Time
+                  </th>
+                  <th className="text-left py-2 px-3 font-extrabold">
+                    Duration
+                  </th>
+                  <th className="text-left py-2 px-3 font-extrabold">Lat</th>
+                  <th className="text-left py-2 px-3 font-extrabold">Lng</th>
+                  <th className="text-left py-2 px-3 font-extrabold">
+                    Distance
+                  </th>
+                  <th className="text-left py-2 px-3 font-extrabold">
+                    Address
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {eventRows.map((r, idx) => (
+                  <tr key={`${r.plate}-${r.startSec ?? idx}`}>
+                    <td className="py-2 px-3 font-semibold text-slate-900">
+                      {r.plate ?? "-"}
+                    </td>
+                    <td className="py-2 px-3 font-semibold text-slate-700">
+                      {String(r.type ?? "-").toUpperCase()}
+                    </td>
+                    <td className="py-2 px-3 text-slate-700">
+                      {fmtTimeWibFromSec(r.startSec)}
+                    </td>
+                    <td className="py-2 px-3 text-slate-700">
+                      {fmtTimeWibFromSec(r.endSec)}
+                    </td>
+                    <td className="py-2 px-3 text-slate-700">
+                      {fmtHm(r.durationSec)}
+                    </td>
+                    <td className="py-2 px-3 text-slate-700">
+                      {typeof r.lat === "number" ? r.lat.toFixed(5) : "-"}
+                    </td>
+                    <td className="py-2 px-3 text-slate-700">
+                      {typeof r.lng === "number" ? r.lng.toFixed(5) : "-"}
+                    </td>
+                    <td className="py-2 px-3 text-slate-700">
+                      {typeof r.distanceMeters === "number"
+                        ? fmtKm(r.distanceMeters)
+                        : "-"}
+                    </td>
+                    <td className="py-2 px-3 text-slate-700">
+                      {String(r.address ?? "").trim() || "-"}
+                    </td>
+                  </tr>
+                ))}
+                {!eventLoading && eventRows.length === 0 ? (
+                  <tr>
+                    <td className="py-4 px-3 text-slate-600" colSpan={9}>
+                      Tidak ada data untuk tanggal ini.
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
           </div>
         </div>
 

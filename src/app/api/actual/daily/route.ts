@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
-import { dayRangeEpochSecJakarta } from "@/lib/actualTrips";
+import {
+  dayRangeEpochSecJakarta,
+  computeTripsFromStops,
+  normalizePlate,
+} from "@/lib/actualTrips";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,17 +36,50 @@ export async function GET(req: Request) {
     return NextResponse.json({
       ok: true,
       date: dateYmd,
-      rows: rows.map((r: any) => ({
-        plate: r.plate,
-        tripCount: r.tripCount,
-        nearStops: r.nearStops,
-        targetLat: r.targetLat,
-        targetLng: r.targetLng,
-        radiusM: r.radiusM,
-        cooldownMin: r.cooldownMin,
-        lastSyncAt: r.lastSyncAt,
-        stops: includeStops ? (r as any).stops : undefined,
-      })),
+      rows: rows.map((r: any) => {
+        const stops = includeStops ? (r as any).stops : undefined;
+        let tripCount = r.tripCount;
+        let nearStops = r.nearStops;
+        let targetLat = r.targetLat;
+        let targetLng = r.targetLng;
+        let radiusM = r.radiusM;
+        let cooldownMin = r.cooldownMin;
+
+        if (includeStops && Array.isArray(stops) && stops.length > 0) {
+          const plate = normalizePlate(r.plate);
+          const stopPoints = stops
+            .map((s: any) => ({
+              lat: typeof s?.lat === "number" ? s.lat : null,
+              lng: typeof s?.lng === "number" ? s.lng : null,
+              startSec:
+                typeof s?.startSec === "number" ? s.startSec : null,
+            }))
+            .filter(
+              (s: any) =>
+                typeof s.lat === "number" &&
+                typeof s.lng === "number",
+            );
+          const computed = computeTripsFromStops(plate, stopPoints);
+          tripCount = computed.tripCount;
+          nearStops = computed.nearStops?.length ?? nearStops;
+          targetLat = computed.target?.lat ?? targetLat;
+          targetLng = computed.target?.lng ?? targetLng;
+          radiusM = computed.radius ?? radiusM;
+          cooldownMin = computed.cooldownMin ?? cooldownMin;
+        }
+
+        return {
+          plate: r.plate,
+          tripCount,
+          nearStops,
+          targetLat,
+          targetLng,
+          radiusM,
+          cooldownMin,
+          lastSyncAt: r.lastSyncAt,
+          stops,
+        };
+      }),
     });
   } catch (e: any) {
     console.error("actual daily error:", e);
