@@ -39,20 +39,21 @@ export async function syncActualTrips(dateYmd?: string) {
       const rows = Array.isArray(loc?.data) ? loc.data : [];
       const nowSec = Math.floor(Date.now() / 1000);
       for (const r of rows) {
-        const plateRaw = r?.alias ?? r?.plate ?? "";
+        const plateRaw =
+          r?.alias ?? (r as any)?.plate ?? (r as any)?.sn ?? "";
         const plate = normalizePlate(String(plateRaw));
         if (!plate || plate === "-") continue;
         const lat0 =
-          typeof r?.latitude === "number"
-            ? r.latitude
-            : typeof r?.location?.latitude === "number"
-              ? r.location.latitude
+          typeof (r as any)?.latitude === "number"
+            ? (r as any).latitude
+            : typeof (r as any)?.location?.latitude === "number"
+              ? (r as any).location.latitude
               : null;
         const lng0 =
-          typeof r?.longitude === "number"
-            ? r.longitude
-            : typeof r?.location?.longitude === "number"
-              ? r.location.longitude
+          typeof (r as any)?.longitude === "number"
+            ? (r as any).longitude
+            : typeof (r as any)?.location?.longitude === "number"
+              ? (r as any).location.longitude
               : null;
         const lat =
           typeof lat0 === "number" ? normalizeCoord(lat0) : null;
