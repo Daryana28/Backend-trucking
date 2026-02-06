@@ -1093,6 +1093,7 @@ function PlanLineActualBarChart({
   tooltipText,
   tooltipSource,
   planEtaByPlate,
+  planTripsByPlate,
   actualEtaByPlate,
   actualTripsByPlate,
   actualEtdTripsByPlate,
@@ -1123,6 +1124,7 @@ function PlanLineActualBarChart({
   tooltipText?: string | null;
   tooltipSource?: "bar" | "line" | null;
   planEtaByPlate?: Record<string, string>;
+  planTripsByPlate?: Record<string, Array<{ tripNo: number; etd: string; eta: string }>>;
   actualEtaByPlate?: Record<string, string>;
   actualTripsByPlate?: Record<string, string[]>;
   actualEtdTripsByPlate?: Record<string, string[]>;
@@ -1273,9 +1275,12 @@ function PlanLineActualBarChart({
                         planMin == null
                           ? []
                           : tripPairs
-                              .map((t) => {
+                              .map((t, idx) => {
+                                const usePlan = planTripsByPlate?.[plate]?.[idx]?.eta ?? planEta;
+                                const base = parseTimeToMin(usePlan);
                                 const m = parseTimeToMin(t.eta);
-                                return m == null ? null : m - planMin;
+                                if (base == null || m == null) return null;
+                                return m - base;
                               })
                               .filter((v): v is number => v != null);
                       const maxDelay =
@@ -1298,8 +1303,11 @@ function PlanLineActualBarChart({
                         const t = tripPairs[idx]?.eta ?? "";
                         if (!t) return "#16A34A";
                         const m = parseTimeToMin(t);
-                        if (planMin == null || m == null) return "#16A34A";
-                        return m - planMin >= delayThresholdMin
+                        const usePlan =
+                          planTripsByPlate?.[plate]?.[idx]?.eta ?? planEta;
+                        const base = parseTimeToMin(usePlan);
+                        if (base == null || m == null) return "#16A34A";
+                        return m - base >= delayThresholdMin
                           ? "#DC2626"
                           : "#16A34A";
                       };
@@ -3558,8 +3566,15 @@ export default function DashboardPage() {
                   }
                   const plate = extractPlateFromDestination(row.label);
                   const actualEta = arrivalByPlate[plate] ?? "";
-                  const planEta = planEtaByPlate[plate] ?? "";
-                  const planEtd = planEtdByPlate[plate] ?? "";
+                  const tripIdx =
+                    (row.tripIndex ? row.tripIndex - 1 : 0) >= 0
+                      ? row.tripIndex
+                        ? row.tripIndex - 1
+                        : 0
+                      : 0;
+                  const tripPlan = planTripsByPlate?.[plate]?.[tripIdx] ?? null;
+                  const planEta = tripPlan?.eta ?? planEtaByPlate[plate] ?? "";
+                  const planEtd = tripPlan?.etd ?? planEtdByPlate[plate] ?? "";
                   const tripsRaw = arrivalTripsByPlate[plate] ?? [];
                   const tripsEtdRaw = departureTripsByPlate[plate] ?? [];
                   const tripPairs = tripsRaw
@@ -3569,12 +3584,6 @@ export default function DashboardPage() {
                     }))
                     .filter((p) => parseTimeToMin(p.eta) != null);
                   const planDot = planEta ? formatTimeDot(planEta) : "-";
-                  const tripIdx =
-                    (row.tripIndex ? row.tripIndex - 1 : 0) >= 0
-                      ? row.tripIndex
-                        ? row.tripIndex - 1
-                        : 0
-                      : 0;
                   const chosenTrip =
                     row.tripTime ||
                     tripPairs[tripIdx]?.eta ||
@@ -3613,6 +3622,7 @@ export default function DashboardPage() {
                 tooltipText={selectedArrivalInfo}
                 tooltipSource={selectedArrivalSource}
                 planEtaByPlate={planEtaByPlate}
+                planTripsByPlate={planTripsByPlate}
                 actualEtaByPlate={arrivalByPlate}
                 actualTripsByPlate={arrivalByPlateEvt}
                 actualEtdTripsByPlate={departureByPlateEvt}
