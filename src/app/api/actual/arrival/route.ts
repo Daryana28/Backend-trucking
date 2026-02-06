@@ -51,7 +51,10 @@ export async function GET(req: Request) {
     for (const [plate, events] of byPlate.entries()) {
       const target = PLATE_TARGET_POINTS[plate] ?? null;
       if (!target) continue;
-      const radius = Number.isFinite(target.radiusM) ? target.radiusM : 5000;
+      const radius =
+        Number.isFinite(target.radiusM) && typeof target.radiusM === "number"
+          ? target.radiusM
+          : 5000;
       const cooldownMin = PLATE_COOLDOWN_MIN[plate] ?? ARRIVAL_COOLDOWN_MIN;
 
       // STOP events (all)
