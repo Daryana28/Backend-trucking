@@ -102,9 +102,37 @@ export async function GET(req: Request) {
       const etdListSec: number[] = [];
       const etaListSec: Array<number | null> = [];
 
+      // Fallback ETA-only list when DRIVE/ETD is missing (timeline empty -> STOP-only)
+      // Use cooldown gap to separate trips.
+      const etaOnlyListSec: number[] = [];
+      if (!drives.length && etaStops.length) {
+        let lastEta: number | null = null;
+        const minGapSec = cooldownMin * 60;
+        for (const s of etaStops) {
+          const t = s.startSec as number;
+          if (typeof t !== "number") continue;
+          if (lastEta == null || t - lastEta >= minGapSec) {
+            etaOnlyListSec.push(t);
+            lastEta = t;
+          }
+        }
+      }
+
       // Trip 1 ETD = earliest drive
       if (drives.length) {
         etdListSec.push(drives[0].startSec as number);
+      } else if (etdStops.length) {
+        // fallback: use first STOP near ETD target (and next after cooldown)
+        const minGapSec = cooldownMin * 60;
+        let lastEtd: number | null = null;
+        for (const s of etdStops) {
+          const t = s.startSec as number;
+          if (typeof t !== "number") continue;
+          if (lastEtd == null || t - lastEtd >= minGapSec) {
+            etdListSec.push(t);
+            lastEtd = t;
+          }
+        }
       }
 
       // Build ETA per ETD, then next ETD after ETA
@@ -143,6 +171,11 @@ export async function GET(req: Request) {
 
       if (etaListSec.length) {
         arrivalByPlate[plate] = etaListSec.map((sec) =>
+          sec != null ? fmtTime(sec) : "",
+        );
+      }
+      if (!etaListSec.length && etaOnlyListSec.length) {
+        arrivalByPlate[plate] = etaOnlyListSec.map((sec) =>
           sec != null ? fmtTime(sec) : "",
         );
       }
